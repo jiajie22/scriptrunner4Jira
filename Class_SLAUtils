@@ -42,48 +42,49 @@ class SLAUtils {
     final List<String> startStatus = ['Waiting for support']
     final List<String> pauseStatus = ['In progress', 'Pending', 'Escalated']
     final List<String> stopStatus = ['Waiting for customer', 'Resolved', 'Closed', 'Canceled' ]
-    
-    
-    //Date formats used in the scripts
-    final String slaDueDateShowFormat = 'dd/MMM/yy'
-    final String changeItemDateFormat = 'yyyy-MM-dd'
-    
-    
+
     /**
-     * Minus one working day from SLA Due Date field, using the 
+     * Minus one working day from SLA Remaining Days field, using the 
      * @param issue , Issue to update the custom field value
-     * @param slaDurationInDays , The number of day to be deducted as Integer
+     * @param customFieldName , Name of custom field to lookup
      */
     String minusRemainingDays(Issue issue, String customFieldName) {
         
         //// SLA Remaining Days
-        final String slaRemaining = customFieldName //"${SLA} SLA Remaining Days"
-        def slaRemainingDaysField = getCustomFieldByName(slaRemaining) //ComponentAccessor.customFieldManager.getCustomFieldObjectsByName(slaDueDateName)
+        final String slaRemaining = customFieldName // "${SLA} SLA Remaining Days"
+        def slaRemainingDaysField = getCustomFieldByName(slaRemaining) 
         log.warn "Custom Field Name ===== ${slaRemainingDaysField}"
         def slaRemainingDays = getCustomFieldValueByName(slaRemaining, issue) as String 
+        
+        // Replace all non-digits to "" using regex - [^0-9]
+        // If the string doesn't contain any digit, return to 0
         def RemainingDays = ((slaRemainingDays.replaceAll("[^0-9]", "")) ? (slaRemainingDays.replaceAll("[^0-9]", "")) : 0 ) as Integer
         log.warn "slaRemainingDays >> ${RemainingDays}"
         
-        
+        // To get the current date (java.Util.Date)
         Date currentDate = new Date()    
         log.warn "currentDate >> ${currentDate}"
+        
+        // Convert the date to LocalDate for Public Holiday and Weekend validations
         def today = currentDate.toInstant().atZone(ZoneId.systemDefault()).toLocalDate()
         log.warn "LocalDate today >> ${today}"
-        List holidays = getHolidays()
         
-
+        List holidays = getHolidays()
         log.warn "isHoliday ? ${(isHoliday(holidays, today))}"
         log.warn "isWeekend ? ${(isWeekend(today))}"
             
         if (isHoliday(holidays, today) || isWeekend(today)) {
-            return "Today is weekend or holiday! No deduct!"
+            return "Today is weekend or public holiday! No deduction!"
         } else {
+            
+            // Recalculate the remaining days and to prevent the remaining days become negative
             def num = 0 as Integer
             if(RemainingDays - 1 > 0){
                 num = RemainingDays - 1
             }
             log.warn "Num to set >> ${num}"
             
+            // Call the method and pass the digit to store the SLA Remaining Days field as a string - "2 days"
             minusOneRemainingDays(slaRemaining, num, issue)
         }
 
@@ -92,9 +93,9 @@ class SLAUtils {
     
     
     /**
-     * Set a value to the SLA Due Date field, using the name
+     * Set a value to the SLA Remaining Days field, using the name
      * @param customFieldName , Name of custom field to lookup
-     * @param value , The new value of SLA Due Date as date
+     * @param number , The recalculated remaining days as Integer
      * @param issue , Issue to update the custom field value
      */
     void minusOneRemainingDays(String customFieldName, Integer number, Issue issue) {
@@ -102,6 +103,7 @@ class SLAUtils {
             CustomField customField = getCustomFieldByName(customFieldName)
             String previousValue = issue?.getCustomFieldValue(customField)
             
+            // Pass the @param number in order to store the new string in the SLA Remaining Days field as a string
             String value = "${number} days" as String
             
             Issue reloadIssue = ComponentAccessor.issueManager.getIssueByCurrentKey(issue.key)
@@ -110,6 +112,8 @@ class SLAUtils {
                 //issue.setCustomFieldValue(customField, value)
                 //ComponentAccessor.issueManager.updateIssue(ComponentAccessor.jiraAuthenticationContext.loggedInUser, issue, EventDispatchOption.DO_NOT_DISPATCH, false)
 
+                
+                // Cast the GStringImpl to a String using toString() method
                 reloadIssue.setCustomFieldValue(customField, value.toString())
                 ComponentAccessor.issueManager.updateIssue(ComponentAccessor.jiraAuthenticationContext.loggedInUser, reloadIssue, EventDispatchOption.DO_NOT_DISPATCH, false)
                 log.warn "==== Successfully Deducted One Working Day from SLA Remaining Days field: ${value} !"
