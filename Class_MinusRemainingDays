@@ -1,0 +1,185 @@
+/**
+ * JOB: Recalculate # days remaining. 
+ * JQL query for all tickets in project where current SLA == Started, Not stopped, not paused. 
+ * Then, minus 1 working day from that due date for all tickets.
+ */
+
+// check each SLA
+// if the current day is working day - minus one working day from the SLA Remaining day (string “2 days”)
+
+import com.atlassian.jira.component.ComponentAccessor
+import com.atlassian.jira.event.type.EventDispatchOption
+import com.atlassian.jira.issue.ModifiedValue
+import com.atlassian.jira.issue.Issue
+import com.atlassian.jira.issue.fields.CustomField
+import com.atlassian.jira.issue.CustomFieldManager
+import com.atlassian.jira.user.ApplicationUser
+
+import com.atlassian.jira.plugins.workinghours.api.calendar.CalendarService
+import com.onresolve.scriptrunner.runner.customisers.PluginModule
+import com.onresolve.scriptrunner.runner.customisers.WithPlugin
+
+import groovy.util.logging.Log4j
+
+import java.time.ZoneId
+import static java.time.DayOfWeek.*
+import java.time.DayOfWeek
+import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
+import java.sql.Timestamp
+
+@WithPlugin("com.atlassian.servicedesk")
+
+@Log4j
+class SLAUtils {   
+    @PluginModule
+    CalendarService slaCalendarService
+    //Name of the calendar where bank holidays will be included
+    final String ukHolidayCalendar = 'UU Business Days'
+    
+    final List<String> startStatus = ['Waiting for support']
+    final List<String> pauseStatus = ['In progress', 'Pending', 'Escalated']
+    final List<String> stopStatus = ['Waiting for customer', 'Resolved', 'Closed', 'Canceled' ]
+    
+    
+    //Date formats used in the scripts
+    final String slaDueDateShowFormat = 'dd/MMM/yy'
+    final String changeItemDateFormat = 'yyyy-MM-dd'
+    
+    
+    /**
+     * Minus one working day from SLA Due Date field, using the 
+     * @param issue , Issue to update the custom field value
+     * @param slaDurationInDays , The number of day to be deducted as Integer
+     */
+    String minusRemainingDays(Issue issue, String customFieldName) {
+        
+        //// SLA Remaining Days
+        final String slaRemaining = customFieldName //"${SLA} SLA Remaining Days"
+        def slaRemainingDaysField = getCustomFieldByName(slaRemaining) //ComponentAccessor.customFieldManager.getCustomFieldObjectsByName(slaDueDateName)
+        log.warn "Custom Field Name ===== ${slaRemainingDaysField}"
+        def slaRemainingDays = getCustomFieldValueByName(slaRemaining, issue) as String 
+        def RemainingDays = ((slaRemainingDays.replaceAll("[^0-9]", "")) ? (slaRemainingDays.replaceAll("[^0-9]", "")) : 0 ) as Integer
+        log.warn "slaRemainingDays >> ${RemainingDays}"
+        
+        
+        Date currentDate = new Date()    
+        log.warn "currentDate >> ${currentDate}"
+        def today = currentDate.toInstant().atZone(ZoneId.systemDefault()).toLocalDate()
+        log.warn "LocalDate today >> ${today}"
+        List holidays = getHolidays()
+        
+
+        log.warn "isHoliday ? ${(isHoliday(holidays, today))}"
+        log.warn "isWeekend ? ${(isWeekend(today))}"
+            
+        if (isHoliday(holidays, today) || isWeekend(today)) {
+            return "Today is weekend or holiday! No deduct!"
+        } else {
+            def num = 0 as Integer
+            if(RemainingDays - 1 > 0){
+                num = RemainingDays - 1
+            }
+            log.warn "Num to set >> ${num}"
+            
+            minusOneRemainingDays(slaRemaining, num, issue)
+        }
+
+        
+    }
+    
+    
+    /**
+     * Set a value to the SLA Due Date field, using the name
+     * @param customFieldName , Name of custom field to lookup
+     * @param value , The new value of SLA Due Date as date
+     * @param issue , Issue to update the custom field value
+     */
+    void minusOneRemainingDays(String customFieldName, Integer number, Issue issue) {
+        if (customFieldName && issue) {
+            CustomField customField = getCustomFieldByName(customFieldName)
+            String previousValue = issue?.getCustomFieldValue(customField)
+            
+            String value = "${number} days" as String
+            
+            Issue reloadIssue = ComponentAccessor.issueManager.getIssueByCurrentKey(issue.key)
+            
+            if (customField && (previousValue != value)) {
+                //issue.setCustomFieldValue(customField, value)
+                //ComponentAccessor.issueManager.updateIssue(ComponentAccessor.jiraAuthenticationContext.loggedInUser, issue, EventDispatchOption.DO_NOT_DISPATCH, false)
+
+                reloadIssue.setCustomFieldValue(customField, value.toString())
+                ComponentAccessor.issueManager.updateIssue(ComponentAccessor.jiraAuthenticationContext.loggedInUser, reloadIssue, EventDispatchOption.DO_NOT_DISPATCH, false)
+                log.warn "==== Successfully Deducted One Working Day from SLA Remaining Days field: ${value} !"
+            }
+        }
+
+    }
+    
+    
+    // =================================================================================================================================== //   
+    // Below lines are copied from https://stash.adaptavist.com/projects/SRS/repos/scripting-service/browse/UUScripts/SLA/SLAUtils.groovy  //
+    // =================================================================================================================================== //
+    
+
+    /**
+     * Check if a date is holiday based on holidays list
+     * @param holidays , list of holidays in a year
+     * @param date , date to check
+     * @return true if is holiday otherwise return false
+     */
+    boolean isHoliday(List holidays, LocalDate date) {
+        //ApplicationUser user = ComponentAccessor.jiraAuthenticationContext.loggedInUser
+        //def ukCalendar = slaCalendarService.getAll(user).find { it.name == ukHolidayCalendar }
+        //ukCalendar?.holidays?.any { it.date.toString() == date?.toString() }
+       
+        holidays?.any { it.date.toString() == date?.toString() }
+    }
+
+    /**
+     * Check if a date is weekend
+     * @param date , date to check
+     * @return true if is weekend otherwise return false
+     */
+    boolean isWeekend(LocalDate date) {
+        date?.dayOfWeek in [DayOfWeek.SATURDAY, DayOfWeek.SUNDAY]
+    }
+    
+    /**
+     * Get a list of holidays in the year for the calendar name given
+     * @return ,a list of all holidays in the calendar
+     */
+    List getHolidays() {
+        ApplicationUser user = ComponentAccessor.jiraAuthenticationContext.loggedInUser
+        def ukCalendar = slaCalendarService.getAll(user).find { it.name == ukHolidayCalendar }
+        ukCalendar?.holidays
+
+    }
+    
+    
+    
+    /**
+     * Get a CustomField object by name
+     * @param customFieldName , Name of custom field to lookup
+     * @return A CustomField object with information about the custom field
+     */
+    CustomField getCustomFieldByName(String customFieldName) {
+        CustomFieldManager customFieldManager = ComponentAccessor.customFieldManager
+        Collection<CustomField> customFields = customFieldManager.getCustomFieldObjectsByName(customFieldName)
+        customFields?.size() > 0 ? customFields.first() : null
+    }
+    
+
+    /**
+     * Get the value of a custom field finding by name
+     * @param customFieldName , Name of custom field to lookup
+     * @return the value of custom field as Object
+     */
+    Object getCustomFieldValueByName(String customFieldName, Issue issue) {
+        CustomField customField = getCustomFieldByName(customFieldName)
+        customField ? issue?.getCustomFieldValue(customField) : null
+    }
+    
+}
