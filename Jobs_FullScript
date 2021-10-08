@@ -68,8 +68,8 @@ searchResults.results.each { documentIssue ->
     def statusC2 = slaUtils.getCustomFieldValueByName(C2, issue) as String
     def statusC3 = slaUtils.getCustomFieldValueByName(C3, issue) as String
     def statusC4 = slaUtils.getCustomFieldValueByName(C4, issue) as String
-	//log.warn "statusC1 >> ${statusC1}"
-	//log.warn "statusC2 >> ${statusC2}"
+    //log.warn "statusC1 >> ${statusC1}"
+    //log.warn "statusC2 >> ${statusC2}"
     
     if(statusC1 == "Start"){
         slaUtils.minusRemainingDays(issue, "C1-1 SLA Remaining Days")
