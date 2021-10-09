@@ -75,9 +75,8 @@ class SLAUtils {
         
         def finalValue = null
         
-        if (isHoliday(holidays, today) || isWeekend(today)) {
-            return "Today is weekend or public holiday! No deduction!"
-        } else {
+        //if (isHoliday(holidays, today) || isWeekend(today))            
+        if (!isHoliday(holidays, today) && !isWeekend(today)) {
             
             // Recalculate the remaining days and to prevent the remaining days become negative
             def num = 0 as Integer
@@ -90,7 +89,7 @@ class SLAUtils {
             
             // Call the method and pass the digit to store the SLA Remaining Days field as a string - "2 days"
             setCustomFieldValue(slaRemaining, finalValue, issue)
-            return "==== Successfully Deducted One Working Day from SLA Remaining Days field: ${finalValue} !"
+            log.warn "==== Successfully Deducted One Working Day from SLA Remaining Days field: ${finalValue} !"
         }
 
         
@@ -118,8 +117,6 @@ class SLAUtils {
                 //ComponentAccessor.issueManager.updateIssue(ComponentAccessor.jiraAuthenticationContext.loggedInUser, reloadIssue, EventDispatchOption.DO_NOT_DISPATCH, false)
                 issue.setCustomFieldValue(customField, value as Object)
                 ComponentAccessor.issueManager.updateIssue(ComponentAccessor.jiraAuthenticationContext.loggedInUser, issue, EventDispatchOption.DO_NOT_DISPATCH, false)
-                
-                log.warn "==== Successfully Deducted One Working Day from SLA Remaining Days field: ${value} !"
             }
         }
 
