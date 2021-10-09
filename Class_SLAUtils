@@ -72,7 +72,9 @@ class SLAUtils {
         List holidays = getHolidays()
         log.warn "isHoliday ? ${(isHoliday(holidays, today))}"
         log.warn "isWeekend ? ${(isWeekend(today))}"
-            
+        
+        def finalValue = null
+        
         if (isHoliday(holidays, today) || isWeekend(today)) {
             return "Today is weekend or public holiday! No deduction!"
         } else {
@@ -82,50 +84,46 @@ class SLAUtils {
             if(RemainingDays - 1 > 0){
                 num = RemainingDays - 1
             }
-            log.warn "Num to set >> ${num}"
+            
+            finalValue = "${num} days"
+            log.warn "Final Value >> ${finalValue}"
             
             // Call the method and pass the digit to store the SLA Remaining Days field as a string - "2 days"
-            minusOneRemainingDays(slaRemaining, num, issue)
+            setCustomFieldValue(slaRemaining, finalValue, issue)
+            return "==== Successfully Deducted One Working Day from SLA Remaining Days field: ${finalValue} !"
         }
 
         
     }
-    
-    
-    /**
-     * Set a value to the SLA Remaining Days field, using the name
-     * @param customFieldName , Name of custom field to lookup
-     * @param number , The recalculated remaining days as Integer
-     * @param issue , Issue to update the custom field value
-     */
-    void minusOneRemainingDays(String customFieldName, Integer number, Issue issue) {
-        if (customFieldName && issue) {
-            CustomField customField = getCustomFieldByName(customFieldName)
-            String previousValue = issue?.getCustomFieldValue(customField)
-            
-            // Pass the @param number in order to store the new string in the SLA Remaining Days field as a string
-            String value = "${number} days" as String
-            
-            Issue reloadIssue = ComponentAccessor.issueManager.getIssueByCurrentKey(issue.key)
-            
-            if (customField && (previousValue != value)) {
-                //issue.setCustomFieldValue(customField, value)
-                //ComponentAccessor.issueManager.updateIssue(ComponentAccessor.jiraAuthenticationContext.loggedInUser, issue, EventDispatchOption.DO_NOT_DISPATCH, false)
 
-                
-                // Cast the GStringImpl to a String using toString() method
-                reloadIssue.setCustomFieldValue(customField, value.toString())
-                ComponentAccessor.issueManager.updateIssue(ComponentAccessor.jiraAuthenticationContext.loggedInUser, reloadIssue, EventDispatchOption.DO_NOT_DISPATCH, false)
-                log.warn "==== Successfully Deducted One Working Day from SLA Remaining Days field: ${value} !"
-            }
-        }
-
-    }
     
     
     // =================================================================================================================================== //   
     // Below lines are copied from https://stash.adaptavist.com/projects/SRS/repos/scripting-service/browse/UUScripts/SLA/SLAUtils.groovy  //
     // =================================================================================================================================== //
+    
+    /**
+     * Set a value to a custom field, using the name
+     * @param customFieldName , Name of custom field to lookup
+     * @param value , The new value of custom field as object
+     * @param issue , Issue to update the custom field value
+     */
+    void setCustomFieldValue(String customFieldName, String value, Issue issue) {
+        if (customFieldName && issue) {
+            CustomField customField = getCustomFieldByName(customFieldName)
+            String previousValue = issue?.getCustomFieldValue(customField)
+            //Issue reloadIssue = ComponentAccessor.issueManager.getIssueByCurrentKey(issue.key)
+            if (customField && (previousValue != value)) {
+                //reloadIssue.setCustomFieldValue(customField, value as Object)
+                //ComponentAccessor.issueManager.updateIssue(ComponentAccessor.jiraAuthenticationContext.loggedInUser, reloadIssue, EventDispatchOption.DO_NOT_DISPATCH, false)
+                issue.setCustomFieldValue(customField, value as Object)
+                ComponentAccessor.issueManager.updateIssue(ComponentAccessor.jiraAuthenticationContext.loggedInUser, issue, EventDispatchOption.DO_NOT_DISPATCH, false)
+                
+                log.warn "==== Successfully Deducted One Working Day from SLA Remaining Days field: ${value} !"
+            }
+        }
+
+    }
     
 
     /**
