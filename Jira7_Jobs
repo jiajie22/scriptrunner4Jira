@@ -1,0 +1,71 @@
+//package SLA
+import SLA.SLAUtils2
+import com.atlassian.jira.component.ComponentAccessor
+import com.atlassian.jira.issue.ModifiedValue
+import com.atlassian.jira.issue.search.SearchProvider
+import com.atlassian.jira.issue.util.DefaultIssueChangeHolder
+import com.atlassian.jira.jql.parser.JqlQueryParser
+import com.atlassian.jira.web.bean.PagerFilter
+//import com.atlassian.jira.issue.search.SearchQuery
+import com.atlassian.jira.bc.issue.search.SearchService
+
+// Import Classes stored in Script Editor
+SLAUtils2 slaUtils = new SLAUtils2()
+
+log.warn "Run Jobs"
+
+// Get the custom field name
+final def C1 = "C1-1 Status"
+final def C2 = "C1-2 Status"
+final def C3 = "C1-3 Status"
+final def C4 = "C1-4 Status"
+
+// Get the custom field 
+def customFieldC1 = slaUtils.getCustomFieldByName(C1) 
+def customFieldC2 = slaUtils.getCustomFieldByName(C2) 
+def customFieldC3 = slaUtils.getCustomFieldByName(C3) 
+def customFieldC4 = slaUtils.getCustomFieldByName(C4) 
+
+def issueManager = ComponentAccessor.issueManager
+def searchService = ComponentAccessor.getComponent(SearchService)
+def user = ComponentAccessor.getJiraAuthenticationContext().getLoggedInUser()
+def queryParser = ComponentAccessor.getComponent(JqlQueryParser)
+
+// JQL for SLA Remaining Days field
+//final searchQuery = 'project = UFT AND ("C1-1 Status" ~ Started OR "C1-2 Status" ~ Started OR "C1-3 Status" ~ Started OR "C1-4 Status" ~ Started) '
+def query = queryParser.parseQuery('project = UFT AND ("C1-1 Status" ~ Started OR "C1-2 Status" ~ Started OR "C1-3 Status" ~ Started OR "C1-4 Status" ~ Started)')
+def search = searchService.search(user, query, new PagerFilter())
+
+// Iterate all results to update each issue
+search.issues.each { documentIssue ->
+    
+    //def key = documentIssue.document.fields.find { it.name() == "key" }.stringValue()
+    def key = documentIssue.getKey()  
+    def issue = issueManager.getIssueObject(key)
+    log.warn "====================${issue}===================="
+
+    //// ========================== Minus 1 WORKING DAY from the SLA Remaining Days if current day is not a Public Holiday or Weekends
+    
+    // Get the custom field value
+    def statusC1 = slaUtils.getCustomFieldValueByName(C1, issue) as String
+    def statusC2 = slaUtils.getCustomFieldValueByName(C2, issue) as String
+    def statusC3 = slaUtils.getCustomFieldValueByName(C3, issue) as String
+    def statusC4 = slaUtils.getCustomFieldValueByName(C4, issue) as String
+    
+    if(statusC1 == "Started"){
+        slaUtils.minusRemainingDays(issue, "C1-1 Days Remaining")
+    }
+    
+    if(statusC2 == "Started"){
+        slaUtils.minusRemainingDays(issue, "C1-2 Days Remaining")
+    }
+    
+    if(statusC3 == "Started"){
+        slaUtils.minusRemainingDays(issue, "C1-3 Days Remaining")
+    }
+    
+    if(statusC4 == "Started"){
+        slaUtils.minusRemainingDays(issue, "C1-4 Days Remaining")
+    }
+    
+}
