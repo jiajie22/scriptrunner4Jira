@@ -1,0 +1,305 @@
+/**
+ * JOB: Recalculate # days remaining. 
+ * JQL query for all tickets in project where current SLA Status == Started (Not stopped and Not paused)
+ * Get the SLA Days Remaining and the Number Of Business Days Between Current Date and SLA Due Date for comparison.
+ * If both return same value, no update needed (reducee performance issue)
+ * Else set the SLA Days Remaining field with the recalculated business days.
+ */
+
+package SLA
+import SLA.SLAUtils
+import Models.SLACase
+import Constants.SLAConstants
+
+import com.atlassian.jira.component.ComponentAccessor
+import com.atlassian.jira.event.type.EventDispatchOption
+import com.atlassian.jira.issue.ModifiedValue
+import com.atlassian.jira.issue.Issue
+import com.atlassian.jira.issue.fields.CustomField
+import com.atlassian.jira.issue.CustomFieldManager
+import com.atlassian.jira.user.ApplicationUser
+
+import com.atlassian.jira.plugins.workinghours.api.calendar.CalendarService
+import com.onresolve.scriptrunner.runner.customisers.PluginModule
+import com.onresolve.scriptrunner.runner.customisers.WithPlugin
+
+import groovy.util.logging.Log4j
+
+import java.time.ZoneId
+import static java.time.DayOfWeek.*
+import java.time.DayOfWeek
+import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
+import java.sql.Timestamp
+
+@WithPlugin("com.atlassian.servicedesk")
+
+@Log4j
+class SLAJobs {   
+    @PluginModule
+    CalendarService slaCalendarService
+    
+    final SLAUtils slaUtils = new SLAUtils()
+    final Issue issue
+    final SLACase slaCase
+    
+    //Date formats used in the scripts
+    final String slaDueDateShowFormat = 'dd/MMM/yy'
+    
+    //Name of the calendar where bank holidays will be included
+    final String ukHolidayCalendar = 'UU Business Days'
+    
+    //To find the weekend from the calendar in isWeekend() method
+    List<String> weekend = SLAConstants.daysOfWeek 
+    
+    //// Modify the SLA_HIERARCHY list if new SLA is added, ie C1-5. Then, add in the data into the Constants.SLAConstants.groovy
+    final List<String> SLA_HIERARCHY = SLAConstants.SLACases.getAt("name")
+    
+    //// Get the SLA STATUS custom field id
+    final String statusId1 = SLAConstants.SLACases.getAt("slaStatusFieldId")[0]
+    final String statusId2 = SLAConstants.SLACases.getAt("slaStatusFieldId")[1]
+    final String statusId3 = SLAConstants.SLACases.getAt("slaStatusFieldId")[2] 
+    final String statusId4 = SLAConstants.SLACases.getAt("slaStatusFieldId")[3]
+    
+    //// Get the SLA DUE DATE custom field id
+    final String dueDateId1 = SLAConstants.SLACases.getAt("slaDueDateFieldId")[0]
+    final String dueDateId2 = SLAConstants.SLACases.getAt("slaDueDateFieldId")[1] 
+    final String dueDateId3 = SLAConstants.SLACases.getAt("slaDueDateFieldId")[2]
+    final String dueDateId4 = SLAConstants.SLACases.getAt("slaDueDateFieldId")[3]
+
+    //// Get the SLA DAYS REMAINING custom field id
+    final String daysRemainingId1 = SLAConstants.SLACases.getAt("slaDaysRemainingFieldId")[0]
+    final String daysRemainingId2 = SLAConstants.SLACases.getAt("slaDaysRemainingFieldId")[1]
+    final String daysRemainingId3 = SLAConstants.SLACases.getAt("slaDaysRemainingFieldId")[2]
+    final String daysRemainingId4 = SLAConstants.SLACases.getAt("slaDaysRemainingFieldId")[3]
+    
+    
+    boolean UpdateDaysRemainingWithBusinessDays(Issue issue, String DaysRemainingFieldId, String DueDateFieldId) {
+        def finalValue = null
+        
+        LocalDate currentDateToLocal
+		currentDateToLocal = LocalDate.now()
+        
+        def slaDueDateField = getCustomFieldById(DueDateFieldId) 
+        def slaDueDate = getCustomFieldValueById(DueDateFieldId, issue) as String 
+        def dueDateParsed = Date.parse(slaDueDateShowFormat, slaDueDate)
+		def dueDateToLocal = dueDateParsed.toInstant().atZone(ZoneId.systemDefault()).toLocalDate() 
+        
+        def slaDaysRemainingField = getCustomFieldById(DaysRemainingFieldId) 
+        def DaysRemaining = getDaysRemainingById(issue, DaysRemainingFieldId) as Integer
+        def businessDaysRemaining = getBusinessDaysBetweenTwoDatesLocalDateFormatted(currentDateToLocal, dueDateToLocal) as Integer
+        
+        String businessDaysFormattedString = businessDaysRemaining ? (businessDaysRemaining == 1 || businessDaysRemaining == -1) ? "${businessDaysRemaining} Day" : "${businessDaysRemaining} Days" : businessDaysRemaining == null ? null : 'Today'
+        //finalValue = "${BD} days"
+        if(slaDaysRemainingField && DaysRemaining != businessDaysRemaining){            
+            issue.setCustomFieldValue(slaDaysRemainingField, businessDaysFormattedString.toString() as Object)
+            //setCustomFieldValueById(DaysRemainingFieldId, finalValue, issue)
+            log.warn ">>>>>>>>>>> Set! ${slaDaysRemainingField} (${DaysRemaining}) not same as Business Days (${businessDaysRemaining})"
+        }
+        (slaDaysRemainingField && DaysRemaining != businessDaysRemaining)
+    } 
+
+        
+    void setDaysRemaining(Issue issue) {
+        ComponentAccessor.issueManager.updateIssue(ComponentAccessor.jiraAuthenticationContext.loggedInUser, issue, EventDispatchOption.DO_NOT_DISPATCH, false)
+    }
+
+    /**
+     * Minus one working day from SLA Remaining Days field, using the 
+     * @param issue , Issue to update the custom field value
+     * @param customFieldName , Name of custom field to lookup
+     */
+     Integer getDaysRemainingById(Issue issue, String DaysRemainingFieldId) {
+        
+		def slaDaysRemainingField = getCustomFieldById(DaysRemainingFieldId) 
+        def slaDaysRemaining = getCustomFieldValueById(DaysRemainingFieldId, issue) as String 
+
+        //// Replace all non-digits to "" using regex - [^\\d-0-9] - If the string doesn't contain any digit, return to 0
+        // By Max - DaysRemaining could be negative
+        def DaysRemaining = 0 as Integer
+        if(slaDaysRemaining){
+            DaysRemaining = ((slaDaysRemaining.replaceAll("[^\\d-0-9]", "")) ? (slaDaysRemaining.replaceAll("[^\\d-0-9]", "")) : 0 ) as Integer
+        }
+        
+        DaysRemaining
+    }
+
+    
+    /**
+     * Calculate the difference between two dates in business days
+    */ 
+    Integer getBusinessDaysBetweenTwoDatesLocalDateFormatted(LocalDate fromDate, LocalDate untilDate) {
+        Integer daysUntilDueDate = obtainDifferenceBetweenDates(fromDate, untilDate, ChronoUnit.DAYS)
+        getDurationInBusinessDays(daysUntilDueDate)
+    }
+    
+
+    /**
+     * Given a duration, calculates how much of the duration are business days based on today date
+     * @param durationInDays , number of days
+     * @return ,the amount of business days
+     */
+    // ============================ Modified isWeekend so that it will follow the business days of the Calendar
+    Integer getDurationInBusinessDays(Integer durationInDays, LocalDate startCountingDate = null) {
+        LocalDate resultDate
+        if (!startCountingDate) {
+            resultDate = LocalDate.now()
+        } else if (startCountingDate.isAfter(LocalDate.now())) {
+            resultDate = LocalDate.now()
+        } else {
+            resultDate = startCountingDate
+        }
+        log.warn "getDurationInBusinessDays resultDate >> " + resultDate
+        
+        List holidays = slaUtils.getHolidays()
+        List workingTimes = getWorkingTimes()
+        log.warn "getDurationInBusinessDays durationInDays >> " + durationInDays
+        
+        boolean isNegative = durationInDays < 0
+        
+        // To return the absolute value of a number: -2 = 2, 2 = 2  >>>>>>> Math.abs(durationInDays)
+        long totalBusinessDays = durationInDays 
+        log.warn "totalBusinessDays >> " + totalBusinessDays
+        Math.abs(durationInDays)?.times {
+            resultDate =  isNegative ? resultDate.minusDays(1) : resultDate.plusDays(1)  
+        	//log.warn "resultDate plus 1 >> " + resultDate
+            
+            if (slaUtils.isHoliday(holidays, resultDate) || isWeekend(workingTimes,resultDate)) {
+                isNegative ? (totalBusinessDays += 1) : (totalBusinessDays -= 1 )
+            }
+        }
+        
+        log.warn "isNegative (durationInDays < 0)? >> " + (isNegative)      
+        log.warn " ========== totalBusinessDays >> " + totalBusinessDays  
+        //isNegative ? (totalBusinessDays * -1) : totalBusinessDays
+        totalBusinessDays
+    }
+    
+    
+    /*
+    // ==================== ORI
+    Integer getDurationInBusinessDays(Integer durationInDays, LocalDate startCountingDate = null) {
+        LocalDate resultDate
+        if (!startCountingDate) {
+            resultDate = LocalDate.now()
+        } else if (startCountingDate.isAfter(LocalDate.now())) {
+            resultDate = LocalDate.now()
+        } else {
+            resultDate = startCountingDate
+        }
+        
+        List holidays = slaUtils.getHolidays()
+        List workingTimes = getWorkingTimes()
+        
+        boolean isNegative = durationInDays < 0
+        long totalBusinessDays = Math.abs(durationInDays)
+        Math.abs(durationInDays)?.times {
+            resultDate = resultDate.plusDays(1)
+            if (slaUtils.isHoliday(holidays, resultDate) || isWeekend(workingTimes,resultDate)) {
+                totalBusinessDays -= 1
+            }
+        }
+        //log.warn "FInal >> " + (isNegative ? (totalBusinessDays * -1) : totalBusinessDays)
+        isNegative ? (totalBusinessDays * -1) : totalBusinessDays
+    }
+    /**/
+    
+    
+    /** ORIGINAL
+     * Calculates the difference between two dates, in the given temporal unit
+     * @param dateFrom , start date to calculate the difference. If null, today will be choosen.
+     * @param dateUntil , end date to calculate the difference. If null, today will be choosen.
+     * @param temporalUnit , the temporal unit for the difference (Days, Weeks ...)
+     * @return the difference between the dates in the temporal unit given or days if temporalUnit is null
+     */
+    Integer obtainDifferenceBetweenDates(LocalDate dateFrom, LocalDate dateUntil, ChronoUnit temporalUnit) {
+        //log.warn "obtainDifference dateFrom >> " + (dateFrom)  
+        //log.warn "obtainDifference dateUntil >> " + (dateUntil)  
+        LocalDate localDateFrom = dateFrom ?: LocalDate.now()
+        //log.warn "obtainDifference localDateFrom >> " + (localDateFrom)  
+        LocalDate localDateUntil = dateUntil ?: LocalDate.now()
+        //log.warn "obtainDifference localDateUntil >> " + (localDateUntil)  
+        ChronoUnit givenTemporalUnit = temporalUnit ?: ChronoUnit.DAYS
+        //log.warn "obtainDifference givenTemporalUnit >> " + givenTemporalUnit
+        log.warn "obtainDifference localDateFrom.until >> " + localDateFrom.until(localDateUntil, givenTemporalUnit)
+        localDateFrom.until(localDateUntil, givenTemporalUnit)
+    }
+
+     /**
+     * Get a CustomField object by id
+     * @param customFieldId , ID of custom field to lookup
+     * @return A CustomField object with information about the custom field
+     */
+    CustomField getCustomFieldById(String customFieldId) {
+        CustomFieldManager customFieldManager = ComponentAccessor.customFieldManager
+        //Collection<CustomField> customFields = customFieldManager.getCustomFieldObjectsByName(customFieldName)
+        //customField?.size() > 0 ? customField.first() : null
+        CustomField customField = customFieldManager.getCustomFieldObject(customFieldId) 
+        customField ? customField.find() : null
+    }
+    
+
+    /**
+     * Get the value of a custom field finding by id
+     * @param customFieldId , ID of custom field to lookup
+     * @return the value of custom field as Object
+     */
+    Object getCustomFieldValueById(String customFieldId, Issue issue) {
+        CustomField customField = getCustomFieldById(customFieldId)
+        customField ? issue?.getCustomFieldValue(customField) : null
+    }
+    
+        
+    /**
+     * Set a value to a custom field, using the id
+     * @param customFieldId , ID of custom field to lookup
+     * @param value , The new value of custom field as object
+     * @param issue , Issue to update the custom field value
+     */
+    void setCustomFieldValueById(String customFieldId, String value, Issue issue) {
+        if (customFieldId && issue) {
+            CustomField customField = getCustomFieldById(customFieldId)
+            String previousValue = issue?.getCustomFieldValue(customField)
+            //Issue reloadIssue = ComponentAccessor.issueManager.getIssueByCurrentKey(issue.key)
+            
+            if (customField && (previousValue != value)) {
+                //reloadIssue.setCustomFieldValue(customField, value as Object)
+                issue.setCustomFieldValue(customField, value as Object)
+                ComponentAccessor.issueManager.updateIssue(ComponentAccessor.jiraAuthenticationContext.loggedInUser, issue, EventDispatchOption.DO_NOT_DISPATCH, false)
+            }
+        }
+    }
+    
+    
+    /**
+     * Check if a date is weekend
+     * @param workingTimes , list of working/business times
+     * @param date , date to check
+     * @return true if is weekend otherwise return false
+     */
+    boolean isWeekend(List workingTimes, LocalDate date) {
+        workingTimes?.each{
+            if(weekend.contains(it.weekday.toString())){
+                weekend.remove(it.weekday.toString())
+            }
+        }
+        
+        def DayForToday = date?.dayOfWeek as String
+        //date?.dayOfWeek in [DayOfWeek.SATURDAY, DayOfWeek.SUNDAY]
+        DayForToday in weekend 
+    }
+    
+    
+    /**
+     * Get a list of working/business times for the calendar name given
+     * @return ,a list of working/business times in the calendar
+     */
+    List getWorkingTimes() {
+        ApplicationUser user = ComponentAccessor.jiraAuthenticationContext.loggedInUser
+        def ukCalendar = slaCalendarService.getAll(user).find { it.name == ukHolidayCalendar }
+        ukCalendar?.workingTimes
+
+    } 
+}
