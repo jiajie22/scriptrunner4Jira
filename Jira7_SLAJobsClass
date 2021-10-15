@@ -109,7 +109,10 @@ class SLAJobs {
         (slaDaysRemainingField && DaysRemaining != businessDaysRemaining)
     } 
 
-        
+    /**
+     * To update an issue and store the value to Jira Database.
+     * @param issue , Issue to update the custom field value
+     */    
     void setDaysRemaining(Issue issue) {
         ComponentAccessor.issueManager.updateIssue(ComponentAccessor.jiraAuthenticationContext.loggedInUser, issue, EventDispatchOption.DO_NOT_DISPATCH, false)
     }
@@ -186,36 +189,7 @@ class SLAJobs {
     }
     
     
-    /*
-    // ==================== ORI
-    Integer getDurationInBusinessDays(Integer durationInDays, LocalDate startCountingDate = null) {
-        LocalDate resultDate
-        if (!startCountingDate) {
-            resultDate = LocalDate.now()
-        } else if (startCountingDate.isAfter(LocalDate.now())) {
-            resultDate = LocalDate.now()
-        } else {
-            resultDate = startCountingDate
-        }
-        
-        List holidays = slaUtils.getHolidays()
-        List workingTimes = getWorkingTimes()
-        
-        boolean isNegative = durationInDays < 0
-        long totalBusinessDays = Math.abs(durationInDays)
-        Math.abs(durationInDays)?.times {
-            resultDate = resultDate.plusDays(1)
-            if (slaUtils.isHoliday(holidays, resultDate) || isWeekend(workingTimes,resultDate)) {
-                totalBusinessDays -= 1
-            }
-        }
-        //log.warn "FInal >> " + (isNegative ? (totalBusinessDays * -1) : totalBusinessDays)
-        isNegative ? (totalBusinessDays * -1) : totalBusinessDays
-    }
-    /**/
-    
-    
-    /** ORIGINAL
+    /** 
      * Calculates the difference between two dates, in the given temporal unit
      * @param dateFrom , start date to calculate the difference. If null, today will be choosen.
      * @param dateUntil , end date to calculate the difference. If null, today will be choosen.
@@ -223,14 +197,10 @@ class SLAJobs {
      * @return the difference between the dates in the temporal unit given or days if temporalUnit is null
      */
     Integer obtainDifferenceBetweenDates(LocalDate dateFrom, LocalDate dateUntil, ChronoUnit temporalUnit) {
-        //log.warn "obtainDifference dateFrom >> " + (dateFrom)  
-        //log.warn "obtainDifference dateUntil >> " + (dateUntil)  
-        LocalDate localDateFrom = dateFrom ?: LocalDate.now()
-        //log.warn "obtainDifference localDateFrom >> " + (localDateFrom)  
+        LocalDate localDateFrom = dateFrom ?: LocalDate.now() 
         LocalDate localDateUntil = dateUntil ?: LocalDate.now()
-        //log.warn "obtainDifference localDateUntil >> " + (localDateUntil)  
         ChronoUnit givenTemporalUnit = temporalUnit ?: ChronoUnit.DAYS
-        //log.warn "obtainDifference givenTemporalUnit >> " + givenTemporalUnit
+        
         log.warn "obtainDifference localDateFrom.until >> " + localDateFrom.until(localDateUntil, givenTemporalUnit)
         localDateFrom.until(localDateUntil, givenTemporalUnit)
     }
