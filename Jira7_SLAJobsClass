@@ -54,28 +54,36 @@ class SLAJobs {
     //To find the weekend from the calendar in isWeekend() method
     List<String> weekend = SLAConstants.daysOfWeek 
     
-    //// Modify the SLA_HIERARCHY list if new SLA is added, ie C1-5. Then, add in the data into the Constants.SLAConstants.groovy
+    // Get the SLA cases name, ie C1-1, C1-2, etc., from the Constants.SLAConstants
     final List<String> SLA_HIERARCHY = SLAConstants.SLACases.getAt("name")
     
-    //// Get the SLA STATUS custom field id
+    // Get the SLA STATUS custom field id from the Constants.SLAConstants. Can be called in Jobs script.
     final String statusId1 = SLAConstants.SLACases.getAt("slaStatusFieldId")[0]
     final String statusId2 = SLAConstants.SLACases.getAt("slaStatusFieldId")[1]
     final String statusId3 = SLAConstants.SLACases.getAt("slaStatusFieldId")[2] 
     final String statusId4 = SLAConstants.SLACases.getAt("slaStatusFieldId")[3]
     
-    //// Get the SLA DUE DATE custom field id
+    // Get the SLA DUE DATE custom field id from the Constants.SLAConstants. Can be called in Jobs script.
     final String dueDateId1 = SLAConstants.SLACases.getAt("slaDueDateFieldId")[0]
     final String dueDateId2 = SLAConstants.SLACases.getAt("slaDueDateFieldId")[1] 
     final String dueDateId3 = SLAConstants.SLACases.getAt("slaDueDateFieldId")[2]
     final String dueDateId4 = SLAConstants.SLACases.getAt("slaDueDateFieldId")[3]
 
-    //// Get the SLA DAYS REMAINING custom field id
+    // Get the SLA DAYS REMAINING custom field id from the Constants.SLAConstants. Can be called in Jobs script.
     final String daysRemainingId1 = SLAConstants.SLACases.getAt("slaDaysRemainingFieldId")[0]
     final String daysRemainingId2 = SLAConstants.SLACases.getAt("slaDaysRemainingFieldId")[1]
     final String daysRemainingId3 = SLAConstants.SLACases.getAt("slaDaysRemainingFieldId")[2]
     final String daysRemainingId4 = SLAConstants.SLACases.getAt("slaDaysRemainingFieldId")[3]
     
     
+    
+    /**
+     * Compare the values of SLA Days Remaining field and Number of Business Days between two dates.
+     * Then, update the SLA Days Remaining field with the recalculated business days if both values are not the same.
+     * @param issue , Issue to update the custom field value
+     * @param DaysRemainingFieldId , ID of SLA Days Remaining field to lookup
+     * @param DueDateFieldId , ID of SLA Due Date field to lookup
+     */
     boolean UpdateDaysRemainingWithBusinessDays(Issue issue, String DaysRemainingFieldId, String DueDateFieldId) {
         def finalValue = null
         
