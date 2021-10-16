@@ -1,0 +1,783 @@
+package SLA
+
+import com.atlassian.jira.component.ComponentAccessor
+import com.atlassian.jira.event.type.EventDispatchOption
+import com.atlassian.jira.issue.CustomFieldManager
+import com.atlassian.jira.issue.Issue
+import com.atlassian.jira.issue.changehistory.ChangeHistory
+import com.atlassian.jira.issue.changehistory.ChangeHistoryManager
+import com.atlassian.jira.issue.fields.CustomField
+import com.atlassian.jira.issue.history.ChangeItemBean
+import com.atlassian.jira.plugins.workinghours.api.calendar.CalendarService
+import com.atlassian.jira.user.ApplicationUser
+import com.onresolve.scriptrunner.runner.customisers.PluginModule
+import com.onresolve.scriptrunner.runner.customisers.WithPlugin
+import groovy.util.logging.Log4j
+
+import java.time.DayOfWeek
+import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
+import java.sql.Timestamp
+
+@WithPlugin("com.atlassian.servicedesk")
+
+@Log4j
+class SLAUtils {
+    @PluginModule
+    CalendarService slaCalendarService
+    //Name of the calendar where bank holidays will be included
+    final String ukHolidayCalendar = 'UU Business Days'
+
+    //Date formats used in the scripts
+    final String slaDueDateShowFormat = 'dd/MMM/yy'
+    final String changeItemDateFormat = 'yyyy-MM-dd'
+    final DateTimeFormatter timestampFieldsFormat = DateTimeFormatter.ofPattern('yyyy-MM-dd HH:mm:ss.S')
+
+    // Field and status names for deferral and info pause process process
+    final String deferralStatusName = 'Request Deferred'
+    final String customDeferralStatusName = '<New Deferral Status>'
+    final String deferralStartDateFieldName = 'Deferral Start Date'
+    final String deferralEndDateFieldName = 'Deferral End Date'
+    final List<String> finishInfoProcessTimestampFields = ['InfoProd Timestamp', 'CustInfoProd Timestamp']
+
+    //Hidden fields used to perform the calculations about different SLA Days Remaining and SLA Due Date scripted fields
+    final String deferredSlaDueDateHiddenFieldStandard = 'Hidden Deferred Sla Due Date'
+    final String slaDueDateHiddenFieldStandard = 'Hidden SLA Due Date'
+    final String slaDaysRemainingHiddenFieldStandard = 'Hidden SLA Days Remaining'
+    final String slaFinished = 'Hidden SLA Finished'
+
+
+    //Colours for the Due Date and Days Remaining fields
+    final String todaysColour = '#db782c'
+    final String breachedColour = 'red'
+    final String pausedColour = 'blue'
+    final String ongoingColour = 'green'
+    final String finishedInTimeColour = 'grey'
+    final String finishedOutTimeColour = 'purple'
+
+    final List<String> pauseStatus = ['Request Deferred', 'Cust Info Requested', 'Info Requested']
+    /**
+     * Calculates the SLA Due Date scripted field based on the requested timestamps and the duration by requested params
+     * At first, checks if the case is in Request Deferred status, to make an special calculations, otherwise, checks
+     * was finished, in that case we only need to show the sla date that is already calculated. Otherwise, we need to make some
+     * calculations to obtain the correct SLA Due date, adding slaDurationInDays to this timestamp, fronzen the timestamp, or blank
+     * the field, depending on the parametrization received in relationBetweenTimestampAndAction
+     * @param issue , the issue which we are calculating the SLA Due Date
+     * @param relationBetweenTimestampAndAction , it contains the relation between the timestamp fields and the action that we need to do
+     * @param slaDurationInDays , the sla duration in days format
+     * @return the date calculated as string with format dd/MMM/yy
+     */
+    String calculateSlaDueDate(Issue issue, List<Map> relationBetweenTimestampAndAction, Integer slaDurationInDays, String slaCase, boolean isEndTrigger) {
+        // List to store all the timestamps fields that provoke that SLA Due Date needs to be recalculated
+        final List timestampGroupCalculate = relationBetweenTimestampAndAction.findAll { it.action == 'calculate' }.collect { it.timestampField }
+        // List to store all the timestamps fields that provoke that SLA Due Date needs to be blanked
+        final List timestampGroupBlank = relationBetweenTimestampAndAction.findAll { it.action == 'blank' }.collect { it.timestampField }
+        // List to store all the timestamps that provoke that SLA Due Date needs to be frozen
+        final List timestampGroupFrozen = relationBetweenTimestampAndAction.findAll { it.action == 'frozen' }.collect { it.timestampField }
+        // List to store all the timestamps that provoke that SLA Due Date needs to be deferred
+        final List timestampGroupDefer = relationBetweenTimestampAndAction.findAll { it.action == 'defer' }.collect { it.timestampField }
+        // List to store all the timestamps that can affect the SLA Due Date value
+        final List timestampFields = relationBetweenTimestampAndAction.collect { it.timestampField }
+
+        Map.Entry maxTimestamp = getMaxTimestamp(issue, timestampFields)
+        log.error "maxTimestamp: ${maxTimestamp}"
+
+        String deferredSlaDueDateHiddenField = "${slaCase}_${deferredSlaDueDateHiddenFieldStandard}"
+        String slaDueDateHiddenField = "${slaCase}_${slaDueDateHiddenFieldStandard}"
+        String slaFinishedHiddenField = "${slaCase}_${slaFinished}"
+        String slaDueDate
+        String previousSlaDueDate = getCustomFieldValueByName(slaDueDateHiddenField, issue)
+
+        if (maxTimestamp?.key in timestampGroupCalculate) {
+            slaDueDate = calculateStandardSlaDueDate(maxTimestamp, slaDurationInDays, issue)
+            if (previousSlaDueDate != slaDueDate) {
+                setCustomFieldValue(slaDueDateHiddenField, slaDueDate, issue)
+            }
+        } else if (maxTimestamp?.key in timestampGroupBlank) {
+            slaDueDate = ''
+            if (previousSlaDueDate != slaDueDate) {
+                setCustomFieldValue(slaDueDateHiddenField, '', issue)
+            }
+        } else if (maxTimestamp?.key in timestampGroupFrozen) {
+            slaDueDate = getCustomFieldValueByName(slaDueDateHiddenField, issue)
+
+            if (maxTimestamp?.key in finishInfoProcessTimestampFields) {
+                //TODO Here is where we need to check if start and finish are the same date if the confirm
+                String deferredSlaDueDate = getCustomFieldValueByName(deferredSlaDueDateHiddenField, issue)
+                if (deferredSlaDueDate) {
+                    slaDueDate = deferredSlaDueDate
+                    setCustomFieldValue(deferredSlaDueDateHiddenField, '', issue)
+                }
+            }
+        } else if (maxTimestamp?.key in timestampGroupDefer) {
+            slaDueDate = calculateDeferredSlaDueDate(issue, maxTimestamp, slaDueDateHiddenField, deferredSlaDueDateHiddenField)
+        }
+        log.error "isEndTrigger: ${isEndTrigger}"
+        if (isEndTrigger) {
+            log.error "enter here: ${isEndTrigger}"
+            setCustomFieldValue(slaFinishedHiddenField, 'true', issue)
+        }
+        slaDueDate ? formatSLADueDate(slaDueDate, issue, "${slaCase}_${slaDaysRemainingHiddenFieldStandard}", slaFinishedHiddenField) : null
+    }
+
+    String formatSLADueDate(String slaDueDate, Issue issue, String slaDaysRemainingHiddenField, String slaFinishedHiddenField) {
+        String colourSelected = 'black'
+        String isSLAFinished = getCustomFieldValueByName(slaFinishedHiddenField, issue)
+        log.error "isSLAFinished: ${isSLAFinished}"
+        if (isSLAFinished == 'true') {
+            Integer daysRemaining = getCustomFieldValueByName(slaDaysRemainingHiddenField, issue)
+            colourSelected = (daysRemaining >= 0) ? finishedInTimeColour : finishedOutTimeColour
+        } else {
+            if (issue.status.name in pauseStatus) {
+                colourSelected = pausedColour
+            } else {
+                Integer daysRemaining = obtainDifferenceBetweenDates(getLocalDateFromString(slaDueDate, slaDueDateShowFormat), null, null)
+                log.error "daysRemaining:${daysRemaining}"
+                if (daysRemaining > 0) {
+                    colourSelected = breachedColour
+                } else {
+                    if (daysRemaining == 0) {
+                        colourSelected = todaysColour
+                    } else {
+                        log.error "here"
+                        colourSelected = ongoingColour
+                    }
+                }
+            }
+        }
+        log.error "'color:${colourSelected}"
+        String formattedSLA = "<p style='color:${colourSelected}'><b>${slaDueDate}</b></p>"
+    }
+
+    /**
+     * Get the value of all the timestamp fields of an issue and calculate the max date of all them
+     * @param issue , the issue to get the values
+     * @param timestampFields , list with all the timestamp fields to find their value
+     * @return a Map.Entry with the name of the field as a key, and the timestamp value as a value.
+     */
+    Map.Entry getMaxTimestamp(Issue issue, List timestampFields) {
+        Collection<CustomField> customFields = ComponentAccessor.customFieldManager.getCustomFieldObjects(issue)
+
+        Map timestampCustomFields = customFields.findAll { it.name in timestampFields }
+                .inject([:]) { dataToInject, customField ->
+                    dataToInject[customField.name] = issue.getCustomFieldValue(customField)
+                    dataToInject
+                }
+        timestampCustomFields.every { !it.value } ? null : timestampCustomFields.max { it.value }
+    }
+
+    /**
+     * Calculate the SLA due Date using the last max timestamp encountered as reference for start counting.
+     * We need to add to this date, the slaDurationInDays field, and the days that the case have been in
+     * 'Request Deferred' status (plus 1 day for every defer period). We also need to check if the timestamp received
+     * is on weekend or holiday, to start counting in the next business day.
+     * @param timestamp , the max timestamp field encountered in the issue
+     * @param slaDurationInDays , the sla duration received
+     * @param issue , the issue to obtain the information related with the deferral periods
+     * @return ,the new SLA due date calculated in format dd/MMM/yy
+     */
+    String calculateStandardSlaDueDate(Map.Entry timestamp, Integer slaDurationInDays, Issue issue) {
+
+        LocalDateTime timestampDateTime = LocalDateTime.parse(timestamp.value, timestampFieldsFormat)
+        Integer totalDaysInDeferredStatus = howManyDaysInDeferralStatus(issue, timestampDateTime)
+        log.error "totalDaysInDeferredStatus: ${totalDaysInDeferredStatus}"
+        LocalDate slaDay0 = calculateSlaDay0(timestampDateTime)
+        log.error "slaDay0: ${slaDay0}"
+        LocalDate slaDueDate = addBusinessDaysToSlaDay0(slaDay0, totalDaysInDeferredStatus + slaDurationInDays)
+        log.error "slaDueDate: ${slaDueDate}"
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern(slaDueDateShowFormat)
+        slaDueDate?.format(formatter)
+    }
+    String calculateStandardSlaDueDate_v2(Issue issue, Integer slaDurationInDays) {
+        LocalDateTime timestampDateTime = LocalDateTime.now()
+        LocalDate slaDay0 = calculateSlaDay0(timestampDateTime)
+        log.error "slaDay0: ${slaDay0}"
+        LocalDate slaDueDate = addBusinessDaysToSlaDay0(slaDay0, slaDurationInDays)
+        log.error "slaDueDate: ${slaDueDate}"
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern(slaDueDateShowFormat)
+        slaDueDate?.format(formatter)
+    }
+
+    /**
+     * Calculate the days that an issue have been in 'Request Deferred' status.
+     * Gets all the changes since the last timestamp, and get the different deferral periods to be able
+     * to calculate the number of days that the issue have been in deferral status.
+     * If we don't have end date, or this date is after today, means that we are in a deferral process at
+     * this moment, so we need to use the actual date.
+     * Calculates the difference between the different pairs of dates, and add 1 day for every defer period.
+     * @param issue , the issue to retrieve the information about status changes
+     * @params timestampDateField, date to start retrieving the deferral periods
+     */
+    Integer howManyDaysInDeferralStatus(Issue issue, LocalDateTime timestampDateTime) {
+        ChangeHistoryManager changeHistoryManager = ComponentAccessor.changeHistoryManager
+        Date startFindingDate = convertToDateViaSqlTimestamp(timestampDateTime)
+        List<ChangeHistory> changeHistories = changeHistoryManager.getChangeHistoriesSince(issue, startFindingDate)
+
+        List<Map> deferralPeriods = getDeferralPeriods(changeHistories, deferralStatusName)
+        List<Map> customDeferralPeriods = getDeferralPeriods(changeHistories, customDeferralStatusName)
+        List<Map> totalDeferralPeriods = deferralPeriods + customDeferralPeriods
+        Integer totalDeferralTimes = deferralPeriods?.size()
+        Integer totalDaysDeferred = 0
+        totalDeferralPeriods.each { Map deferralPeriodMap ->
+            log.error "deferralPeriodMap: ${deferralPeriodMap}"
+            LocalDate startDeferralDate = getLocalDateFromString(deferralPeriodMap[deferralStartDateFieldName], changeItemDateFormat)
+            LocalDate endDeferralDate = getLocalDateFromString(deferralPeriodMap[deferralEndDateFieldName], changeItemDateFormat)
+            if (startDeferralDate && endDeferralDate) {
+//            TODO Uncomment this depending on DEF3 definition
+//              if(startDeferralDate == endDeferralDate){
+//                  totalDaysDeferred -=1
+//              }
+                if (endDeferralDate.isAfter(LocalDate.now())) {
+                    //Means that we are on a deferral process that is not finished yet
+                    endDeferralDate = LocalDate.now()
+                    if (isRetrospectiveDeferral(issue)) {
+                        totalDaysDeferred -= 1
+                        //Deferral is ongoing so we don't need to add an extra days for the period
+                    }
+                }
+                log.error "endDeferralDate: ${endDeferralDate}"
+                totalDaysDeferred += getBusinessDaysBetweenTwoDatesLocalDateFormatted(startDeferralDate, endDeferralDate)
+            }
+        }
+        totalDaysDeferred + totalDeferralTimes
+    }
+
+    /**
+     * Create the relation between the start and end date of deferral periods.
+     * When a period starts, the user needs to fill the start and the end date, and
+     * when the period finish, exist 2 possibilities, if the period is ended manually, we
+     * retrieve the new end date and override the date in the map. Otherwise, the process ends
+     * automatically and we already have the correct date stored.
+     * @param changeHistories , List of all changes since last timestamp
+     * @return a List of maps. Every item on the list is a different deferral period, and inside
+     * this item, we will have a 'Deferral Start Date' key and 'Deferral End Date' key
+     */
+    List<Map> getDeferralPeriods(List<ChangeHistory> changeHistories, String statusName) {
+        List<Map> deferralPeriods = []
+        Map deferralPeriod = [:]
+        changeHistories.reverse().each { ChangeHistory changeHistory ->
+            boolean writeDeferralPeriod = false
+            log.error "changeHistory.changeItemBeans: ${changeHistory.changeItemBeans}"
+            if (changeHistory.changeItemBeans?.find { it.toString == statusName }) {
+                log.error "Enter in to"
+                if (deferralPeriod) { //clean deferral period when we found a new deferral period
+                    deferralPeriod = [:]
+                }
+                changeHistory.changeItemBeans?.reverse().each { ChangeItemBean changeItemBean ->
+                    log.error "changeItemBean: ${changeItemBean}"
+                    if (changeItemBean.field == deferralStartDateFieldName) {
+                        deferralPeriod[deferralStartDateFieldName] = changeItemBean.to
+                        log.error "deferralPeriod1: ${deferralPeriod}"
+                    } else if (changeItemBean.field == deferralEndDateFieldName) {
+                        deferralPeriod[deferralEndDateFieldName] = changeItemBean.to
+                        log.error "deferralPeriod2: ${deferralPeriod}"
+                    }
+                }
+                writeDeferralPeriod = true
+            } else if (changeHistory.changeItemBeans?.find { it.fromString == statusName }) {
+                log.error "Enter in from"
+                changeHistory.changeItemBeans?.reverse().each { ChangeItemBean changeItemBean ->
+                    log.error "changeItemBean: ${changeItemBean}"
+                    if (changeItemBean.field == deferralEndDateFieldName) {
+                        deferralPeriod[deferralEndDateFieldName] = changeItemBean.to
+                        log.error "deferralPeriod3: ${deferralPeriod}"
+                    }
+                }
+
+            }
+            if (writeDeferralPeriod) {
+                deferralPeriods << deferralPeriod
+                writeDeferralPeriod = false
+            }
+        }
+        log.error "deferralPeriods: ${deferralPeriods}"
+        deferralPeriods
+    }
+
+    /**
+     * Convert a LocalDateTime to java.util.Date
+     */
+    Date convertToDateViaSqlTimestamp(LocalDateTime dateToConvert) {
+        return java.sql.Timestamp.valueOf(dateToConvert)
+    }
+
+    /**
+     * Calculates the difference between two dates, in the given temporal unit
+     * @param dateFrom , start date to calculate the difference. If null, today will be choosen.
+     * @param dateUntil , end date to calculate the difference. If null, today will be choosen.
+     * @param temporalUnit , the temporal unit for the difference (Days, Weeks ...)
+     * @return the difference between the dates in the temporal unit given or days if temporalUnit is null
+     */
+    Integer obtainDifferenceBetweenDates(LocalDate dateFrom, LocalDate dateUntil, ChronoUnit temporalUnit) {
+        LocalDate localDateFrom = dateFrom ?: LocalDate.now()
+        LocalDate localDateUntil = dateUntil ?: LocalDate.now()
+        ChronoUnit givenTemporalUnit = temporalUnit ?: ChronoUnit.DAYS
+        localDateFrom.until(localDateUntil, givenTemporalUnit)
+    }
+
+    /**
+     * Checks if SLA day 0 is today (timestampDateTime before 18.00), and obtain the next business day
+     */
+    LocalDate calculateSlaDay0(LocalDateTime timestampDateTime) {
+        LocalDateTime endOfWorkingDayDateTime = timestampDateTime.withHour(18).withMinute(0).withSecond(0)
+        LocalDate slaDay0 = timestampDateTime.isAfter(endOfWorkingDayDateTime) ? timestampDateTime.plusDays(1).toLocalDate() : timestampDateTime.toLocalDate()
+        getNextBusinessDay(slaDay0)
+    }
+
+    /**
+     * Add the business duration days to the date received, checking to add extra days when is weekend or holidays
+     * @param dateOrigin , date to add duration of SLA
+     * @param durationInDays , days of duration of SLA
+     * @return ,a LocalDate object with the new date
+     */
+    LocalDate getNextBusinessDay(LocalDate dateOrigin) {
+        LocalDate resultDate = dateOrigin
+        List holidays = getHolidays()
+        boolean businessDayEncountered = false
+        while (!businessDayEncountered) {
+            if (!isHoliday(holidays, resultDate) && !isWeekend(resultDate)) {
+                businessDayEncountered = true
+            } else {
+                resultDate = resultDate.plusDays(1)
+            }
+        }
+        resultDate
+    }
+
+    /**
+     * Add the business duration days to the date received, checking to add extra days when is weekend or holiday
+     * @param dateOrigin , date to add duration of SLA
+     * @param durationInDays , days of duration of SLA
+     * @return ,a LocalDate object with the new date
+     */
+    LocalDate addBusinessDaysToSlaDay0(LocalDate dateOrigin, Integer durationInDays) {
+        LocalDate resultDate = dateOrigin
+        log.warn "date is: " + resultDate
+        List holidays = getHolidays()
+        log.warn "holidays"
+        long daysAdded = 0
+        while (daysAdded < durationInDays) {
+            resultDate = resultDate.plusDays(1)
+            log.warn "one day added: " + resultDate
+            if (!isHoliday(holidays, resultDate) && !isWeekend(resultDate)) {
+                log.warn "is not holiday and not weekend"
+                daysAdded += 1
+            }
+        }
+        resultDate
+    }
+
+    /**
+     * Get a list of holidays in the year for the calendar name given
+     * @return ,a list of all holidays in the calendar
+     */
+    List getHolidays() {
+        ApplicationUser user = ComponentAccessor.jiraAuthenticationContext.loggedInUser
+        def ukCalendar = slaCalendarService.getAll(user).find { it.name == ukHolidayCalendar }
+        ukCalendar?.holidays
+
+    }
+
+    /**
+     * Check if a date is holiday based on holidays list
+     * @param holidays , list of holidays in a year
+     * @param date , date to check
+     * @return true if is holiday otherwise return false
+     */
+    boolean isHoliday(List holidays, LocalDate date) {
+        holidays?.any { it.date.toString() == date?.toString() }
+    }
+
+    /**
+     * Check if a date is weekend
+     * @param date , date to check
+     * @return true if is weekend otherwise return false
+     */
+    boolean isWeekend(LocalDate date) {
+        date?.dayOfWeek in [DayOfWeek.SATURDAY, DayOfWeek.SUNDAY]
+    }
+
+
+    /**
+     * Calculate the sla due date when an case is deferred (Request deferred status or info request timestamp)
+     * To make the calculations, we need to obtain the number of days since the referral starts and add this
+     * number of business days to the previous sla due date. Store the date calculated in a new hidden field,
+     * different from slaDueDateHiddenField
+     * @param issue , to obtain the necessary information
+     * @param slaDueDateHiddenField , field to obtain the previous deferral process sla due date
+     * @param isDeferralStatus , when true, is deferral process, otherwise is info request pause process
+     * @return a String with the date in format dd/MMM/yy
+     */
+    String calculateDeferredSlaDueDate(Issue issue, Map.Entry timestamp, String slaDueDateHiddenField, String deferredSlaDueDateHiddenField) {
+        LocalDate timestampDateTime = LocalDateTime.parse(timestamp?.value, timestampFieldsFormat)?.toLocalDate()
+        Integer daysUntilDueDate = obtainDifferenceBetweenDates(timestampDateTime, null, ChronoUnit.DAYS)
+        LocalDate slaDueDateTemp = getLocalDateFromString(getCustomFieldValueByName(slaDueDateHiddenField, issue), slaDueDateShowFormat)
+        LocalDate slaDueDate = addBusinessDaysToSlaDay0(slaDueDateTemp, (daysUntilDueDate + 1))
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern(slaDueDateShowFormat)
+        String slaDueDateString = slaDueDate.format(formatter)
+        setCustomFieldValue(deferredSlaDueDateHiddenField, slaDueDateString, issue)
+        slaDueDateString
+    }
+
+    /**
+     * Format a string with the given pattern in a LocalDate object
+     * @param date , string with the date to format
+     * @param pattern , pattern of the date (yyyy-MM-dd, dd-MM-yyyy ...)
+     * @return a LocalDate object with the date formatted, or null if miss any parameter
+     */
+    LocalDate getLocalDateFromString(String date, String pattern) {
+        if (!date || !pattern) {
+            return null
+        }
+        DateTimeFormatter dateTimeFormatter = DateTimeFormatter.ofPattern(pattern)
+        log.error "pattern ${pattern}"
+        log.error "date 1 ${date}"
+        if (pattern == slaDueDateShowFormat) {
+            log.error "Enter 1"
+            if (date.split('/')[0].size() == 1) {
+                log.error "Enter 2"
+                date = "0${date}"
+            }
+        }
+        log.error "date 2 ${date}"
+        LocalDate.parse(date, dateTimeFormatter)
+    }
+
+    /**
+     * Calculates the remaining business days from today until the slaDueDate received by params
+     * @param slaDueDate , the due date stored in a hidden field
+     * @return ,a string indicating the business days until the due date in format 'N days', or '-N days'.
+     * If is today, will return 'Today'
+     */
+    String getDaysRemainingToSlaDueDate(List<Map> relationBetweenTimestampAndActionDaysRemaining,
+                                        Issue issue,
+                                        List<Map> relationBetweenTimestampAndActionDueDate,
+                                        Integer slaDuration,
+                                        String slaCase) {
+        // List to store all the timestamps fields that provoke that SLA Due Date needs to be recalculated
+        final List timestampGroupCalculate = relationBetweenTimestampAndActionDaysRemaining.findAll { it.action == 'calculate' }.collect { it.timestampField }
+        // List to store all the timestamps fields that provoke that SLA Due Date needs to be blanked
+        final List timestampGroupBlank = relationBetweenTimestampAndActionDaysRemaining.findAll { it.action == 'blank' }.collect { it.timestampField }
+        // List to store all the timestamps that provoke that SLA Due Date needs to be frozen
+        final List timestampGroupFrozen = relationBetweenTimestampAndActionDaysRemaining.findAll { it.action == 'frozen' }.collect { it.timestampField }
+        // List to store all the timestamps that can affect the SLA Due Date value
+        final List timestampFields = relationBetweenTimestampAndActionDaysRemaining.collect { it.timestampField }
+
+        Map.Entry maxTimestamp = getMaxTimestamp(issue, timestampFields)
+        String slaDueDateWithTags = calculateSlaDueDate(issue, relationBetweenTimestampAndActionDueDate, slaDuration, slaCase, false)
+        String slaDueDate = slaDueDateWithTags?.replaceAll(/<!--.*?-->/, '')?.replaceAll(/<.*?>/, '')
+        String deferredSlaDueDateHiddenField = "${slaCase}_${deferredSlaDueDateHiddenFieldStandard}"
+        String slaDueDateHiddenField = "${slaCase}_${slaDueDateHiddenFieldStandard}"
+        String slaDaysRemainingHiddenField = "${slaCase}_${slaDaysRemainingHiddenFieldStandard}"
+        String slaFinishedHiddenField = "${slaCase}_${slaFinished}"
+        log.error "log 1"
+        String slaDaysRemaining
+        Integer previousSlaDaysRemaining = getCustomFieldValueByName(slaDaysRemainingHiddenField, issue)
+        Integer businessDaysRemaining
+        boolean calculateDaysRemaining = true
+        if (isDeferred(issue)) {
+            calculateDaysRemaining = false
+            def hiddenFieldValue = getCustomFieldValueByName(slaDaysRemainingHiddenField, issue) ?: null
+            businessDaysRemaining = hiddenFieldValue ? Integer.valueOf(hiddenFieldValue) : null
+            log.error "isRetrospectiveDeferral(issue): ${isRetrospectiveDeferral(issue)}"
+            if (isRetrospectiveDeferral(issue)) {
+                LocalDateTime timestampDateTime = LocalDateTime.parse(maxTimestamp.value, timestampFieldsFormat)
+                Integer totalDaysInDeferredStatus = howManyDaysInDeferralStatus(issue, timestampDateTime)
+                log.error "totalDaysInDeferredStatus: ${totalDaysInDeferredStatus}"
+                businessDaysRemaining += (totalDaysInDeferredStatus - 1)
+            }
+            slaDaysRemaining = businessDaysRemaining == null ? null : formatSlaDaysRemaining(businessDaysRemaining, slaFinslaDaysRemainingHiddenFieldishedHiddenField, issue, )
+        }
+        if (calculateDaysRemaining) {
+            log.error "log 2:  ${maxTimestamp}"
+            if (maxTimestamp?.key in timestampGroupCalculate) {
+                log.error "slaDueDate: ${slaDueDate}"
+                businessDaysRemaining = getBusinessDaysBetweenTwoDates(null, slaDueDate)
+                log.error "businessDaysRemaining: ${businessDaysRemaining}"
+                if (isDeferralEndedToday(issue)) {
+                    businessDaysRemaining -= 1
+                }
+
+                if (businessDaysRemaining > slaDuration) {
+                    businessDaysRemaining = slaDuration
+                }
+                if (previousSlaDaysRemaining != businessDaysRemaining) {
+                    setCustomFieldValue(slaDaysRemainingHiddenField, "${businessDaysRemaining}", issue)
+                }
+                slaDaysRemaining = formatSlaDaysRemaining(businessDaysRemaining, slaFinishedHiddenField, issue, slaDaysRemainingHiddenField)
+            } else if (maxTimestamp?.key in timestampGroupBlank) {
+                slaDaysRemaining = null
+
+                if (previousSlaDaysRemaining != businessDaysRemaining) {
+                    setCustomFieldValue(slaDaysRemainingHiddenField, null, issue)
+                }
+            } else if (maxTimestamp?.key in timestampGroupFrozen) {
+                def hiddenFieldValue = getCustomFieldValueByName(slaDaysRemainingHiddenField, issue) ?: null
+                businessDaysRemaining = hiddenFieldValue ? Integer.valueOf(hiddenFieldValue) : null
+                slaDaysRemaining = businessDaysRemaining == null ? null : formatSlaDaysRemaining(businessDaysRemaining, slaFinishedHiddenField, issue, slaDaysRemainingHiddenField)
+            }
+
+        }
+        log.error "slaDaysRemaining: ${slaDaysRemaining}"
+        slaDaysRemaining
+    }
+    String getDaysRemainingToSlaDueDate_v2(String slaDueDate) {
+        // Verify if it includes today
+        def businessDaysRemaining = getBusinessDaysBetweenTwoDates(null, slaDueDate)
+        // If zero, then 'Today'. If not zero and is 1, 1 day, if not zero and not one, x days. 
+        businessDaysRemaining ? (businessDaysRemaining == 1) ? "${businessDaysRemaining} Day" : "${businessDaysRemaining} Days" : businessDaysRemaining == null ? null : 'Today'
+    }
+
+    boolean isDeferralEndedToday(Issue issue) {
+        def endDeferralDate = getCustomFieldValueByName(deferralEndDateFieldName, issue)
+        endDeferralDate ? LocalDate.now().equals(endDeferralDate?.toLocalDateTime().toLocalDate()) : false
+    }
+
+    boolean isRetrospectiveDeferral(Issue issue) {
+
+        ChangeHistoryManager changeHistoryManager = ComponentAccessor.changeHistoryManager
+        List<ChangeItemBean> changeItemBeans = changeHistoryManager.getChangeItemsForField(issue, deferralStartDateFieldName)
+        String deferralStartDate = changeItemBeans.reverse()[0].toString
+        log.error "deferralStartDate: ${deferralStartDate}"
+        LocalDate deferralStartDateChangeMade = changeItemBeans.reverse()[0].created.toLocalDateTime().toLocalDate()
+        log.error "deferralStartDateChangeMade: ${deferralStartDateChangeMade}"
+        deferralStartDateChangeMade.isAfter(getLocalDateFromString(deferralStartDate, slaDueDateShowFormat))
+    }
+
+    /**
+     * Checks if issue is now in 'Request Deferred' status
+     */
+    boolean isDeferred(Issue issue) {
+        issue?.status?.name in [deferralStatusName, customDeferralStatusName]
+    }
+
+    /**
+     * Format the days remaining to show in field.
+     */
+    String formatSlaDaysRemaining(Integer businessDaysRemaining, String slaFinishedHiddenField, Issue issue, String slaDaysRemainingHiddenField) {
+        String colourSelected = 'black'
+        String isSLAFinished = getCustomFieldValueByName(slaFinishedHiddenField, issue)
+        log.error "isSLAFinished: ${isSLAFinished}"
+        if (isSLAFinished == 'true') {
+            Integer daysRemaining = getCustomFieldValueByName(slaDaysRemainingHiddenField, issue)
+              colourSelected = (daysRemaining >= 0) ? finishedInTimeColour : finishedOutTimeColour
+        } else {
+            if (issue.status.name in pauseStatus) {
+                colourSelected = pausedColour
+            } else {
+                if (businessDaysRemaining < 0) {
+                    colourSelected = breachedColour
+                } else {
+                    if (businessDaysRemaining == 0) {
+                        colourSelected = todaysColour
+                    } else {
+                        colourSelected = ongoingColour
+                    }
+                }
+            }
+        }
+        log.error "'color:${colourSelected}"
+        String businessDaysFormattedString = businessDaysRemaining ? (businessDaysRemaining == 1) ? "${businessDaysRemaining} Day" : "${businessDaysRemaining} Days" : businessDaysRemaining == null ? null : 'Today'
+        String formattedSLA = "<p style='color:${colourSelected}'><b>${businessDaysFormattedString}</b></p>"
+    }
+
+    /**
+     * Calculate the difference between two dates in business days
+     */
+    Integer getBusinessDaysBetweenTwoDates(String fromDate, String untilDate) {
+        Integer daysUntilDueDate = obtainDifferenceBetweenDates(getLocalDateFromString(fromDate, slaDueDateShowFormat), getLocalDateFromString(untilDate, slaDueDateShowFormat), ChronoUnit.DAYS)
+        log.error "daysUntilDueDate: ${daysUntilDueDate}"
+        getDurationInBusinessDays(daysUntilDueDate, getLocalDateFromString(untilDate, slaDueDateShowFormat)) //Why untilDate????, second argument is startCountingDate, so should be fromDate.
+        // Suppose to work with negative days, but I don't think so. And, not sure on its treatment on including dueDate on counting
+    }
+    /**
+     * Calculate the difference between a date to due date in business days
+     * Careful treatment on including dueDate on counting
+     * If fromDate is earlier than dueDate, start counting on fromDate+1 to dueDate inclusive.
+     * If dueDate is earlier, start counting on dueDate+1 to fromDate inclusive.
+     */
+    Integer getBusinessDaysToDueDate(String fromDate, String dueDate) {
+        Integer daysToDueDate = obtainDifferenceBetweenDates(getLocalDateFromString(fromDate, slaDueDateShowFormat), getLocalDateFromString(dueDate, slaDueDateShowFormat), ChronoUnit.DAYS)
+        log.error "daysToDueDate: ${daysToDueDate}"
+        if (daysToUntilDate > 0) {
+            getDurationInBusinessDays_v2(daysToDueDate, getLocalDateFromString(fromDate, slaDueDateShowFormat))
+        } else {
+            getDurationInBusinessDays_v2(daysToDueDate, getLocalDateFromString(dueDate, slaDueDateShowFormat))
+        }
+    }
+
+    /**
+     * Calculate the difference between two dates in business days
+     */
+    Integer getBusinessDaysBetweenTwoDatesLocalDateFormatted(LocalDate fromDate, LocalDate untilDate) {
+        Integer daysUntilDueDate = obtainDifferenceBetweenDates(fromDate, untilDate, ChronoUnit.DAYS)
+        log.warn "daysUntilDueDate is: " + daysUntilDueDate
+        getDurationInBusinessDays(daysUntilDueDate, fromDate)
+    }
+    /**
+     * Calculate the difference between a date to due date in business days
+     * If fromDate is earlier than dueDate, start counting on fromDate+1 to dueDate inclusive.
+     * If dueDate is earlier, start counting on dueDate+1 to fromDate inclusive.
+     */
+    Integer getBusinessDaysToDueDateLocalDateFormatted(LocalDate fromDate, LocalDate dueDate) {
+        Integer daysToDueDate = obtainDifferenceBetweenDates(fromDate, dueDate, ChronoUnit.DAYS)
+        log.warn "daysToDueDate is: " + daysToDueDate
+        if (daysToDueDate > 0) {
+            getDurationInBusinessDays_v2(daysToDueDate, fromDate)
+        } else {
+            getDurationInBusinessDays_v2(daysToDueDate, dueDate)
+        }
+    }
+
+    /**
+     * Given a duration, calculates how much of the duration are business days based on today date
+     * @param durationInDays , number of days
+     * @return ,the amount of business days
+     */
+    Integer getDurationInBusinessDays(Integer durationInDays, LocalDate startCountingDate = null) {
+        LocalDate resultDate
+        if (!startCountingDate) {
+            resultDate = LocalDate.now()
+        } else if (startCountingDate.isAfter(LocalDate.now())) {
+            resultDate = LocalDate.now()
+        } else {
+            resultDate = startCountingDate
+        }
+        log.warn "resultDate is: " + resultDate
+        List holidays = getHolidays()
+        log.warn "holidays is: " + holidays
+        boolean isNegative = durationInDays < 0
+        long totalBusinessDays = Math.abs(durationInDays)
+        log.warn "totalBusinessDays is: " + totalBusinessDays
+        Math.abs(durationInDays)?.times {
+            resultDate = resultDate.plusDays(1)
+            log.warn "$resultDate isHoliday: ${isHoliday(holidays, resultDate)}, isWeekend: ${isWeekend(resultDate)}"
+            if (isHoliday(holidays, resultDate) || isWeekend(resultDate)) {
+                totalBusinessDays -= 1
+            }
+        }
+        log.warn "totalBusinessDays after times is: " + totalBusinessDays
+        isNegative ? (totalBusinessDays * -1) : totalBusinessDays
+    }
+    Integer getDurationInBusinessDays_v2(Integer durationInDays, LocalDate startCountingDate) {
+        log.warn "startCountingDate is: " + startCountingDate
+        List holidays = getHolidays()
+        log.warn "holidays is: " + holidays
+        boolean isNegative = durationInDays < 0
+        long totalBusinessDays = Math.abs(durationInDays)
+        log.warn "totalBusinessDays is: " + totalBusinessDays
+        Math.abs(durationInDays)?.times {
+            startCountingDate = startCountingDate.plusDays(1)
+            log.warn "$startCountingDate isHoliday: ${isHoliday(holidays, startCountingDate)}, isWeekend: ${isWeekend(startCountingDate)}"
+            if (isHoliday(holidays, startCountingDate) || isWeekend(startCountingDate)) {
+                totalBusinessDays -= 1
+            }
+        }
+        log.warn "totalBusinessDays after times is: " + totalBusinessDays
+        isNegative ? (totalBusinessDays * -1) : totalBusinessDays
+    }
+    /**
+     * Set a value to a custom field, using the name
+     * @param customFieldName , Name of custom field to lookup
+     * @param value , The new value of custom field as object
+     * @param issue , Issue to update the custom field value
+     */
+    void setCustomFieldValue(String customFieldName, String value, Issue issue) {
+        if (customFieldName && issue) {
+            CustomField customField = getCustomFieldByName(customFieldName)
+            String previousValue = issue?.getCustomFieldValue(customField)
+            //Issue reloadIssue = ComponentAccessor.issueManager.getIssueByCurrentKey(issue.key)
+            if (customField && (previousValue != value)) {
+                //reloadIssue.setCustomFieldValue(customField, value as Object)
+                //ComponentAccessor.issueManager.updateIssue(ComponentAccessor.jiraAuthenticationContext.loggedInUser, reloadIssue, EventDispatchOption.DO_NOT_DISPATCH, false)
+                issue.setCustomFieldValue(customField, value as Object)
+                ComponentAccessor.issueManager.updateIssue(ComponentAccessor.jiraAuthenticationContext.loggedInUser, issue, EventDispatchOption.DO_NOT_DISPATCH, false)
+            }
+        }
+
+    }
+
+    /**
+     * Get a CustomField object by name
+     * @param customFieldName , Name of custom field to lookup
+     * @return A CustomField object with information about the custom field
+     */
+    CustomField getCustomFieldByName(String customFieldName) {
+        CustomFieldManager customFieldManager = ComponentAccessor.customFieldManager
+        Collection<CustomField> customFields = customFieldManager.getCustomFieldObjectsByName(customFieldName)
+        customFields?.size() > 0 ? customFields.first() : null
+    }
+
+    /**
+     * Get the value of a custom field finding by name
+     * @param customFieldName , Name of custom field to lookup
+     * @return the value of custom field as Object
+     */
+    Object getCustomFieldValueByName(String customFieldName, Issue issue) {
+        CustomField customField = getCustomFieldByName(customFieldName)
+        customField ? issue?.getCustomFieldValue(customField) : null
+    }
+    
+     /**
+     * Get a CustomField object by name
+     * @param customFieldName , Name of custom field to lookup
+     * @return A CustomField object with information about the custom field
+     */
+    CustomField getCustomFieldById(String customFieldId) {
+        CustomFieldManager customFieldManager = ComponentAccessor.customFieldManager
+        //Collection<CustomField> customFields = customFieldManager.getCustomFieldObjectsByName(customFieldName)
+        //customField?.size() > 0 ? customField.first() : null
+        CustomField customField = customFieldManager.getCustomFieldObject(customFieldId)
+        customField ? customField : null
+    }
+    
+
+    /**
+     * Get the value of a custom field finding by name
+     * @param customFieldName , Name of custom field to lookup
+     * @return the value of custom field as Object
+     */
+    Object getCustomFieldValueById(String customFieldId, Issue issue) {
+        CustomField customField = getCustomFieldById(customFieldId)
+        customField ? issue?.getCustomFieldValue(customField) : null
+    }
+    
+        
+    /**
+     * Set a value to a custom field, using the name
+     * @param customFieldName , Name of custom field to lookup
+     * @param value , The new value of custom field as object
+     * @param issue , Issue to update the custom field value
+     */
+    void setCustomFieldValueById(String customFieldId, String value, Issue issue) {
+        if (customFieldId && issue) {
+            CustomField customField = getCustomFieldById(customFieldId)
+            String previousValue = issue?.getCustomFieldValue(customField)
+            //Issue reloadIssue = ComponentAccessor.issueManager.getIssueByCurrentKey(issue.key)
+            
+            if (customField && (previousValue != value)) {
+                //reloadIssue.setCustomFieldValue(customField, value as Object)
+                issue.setCustomFieldValue(customField, value as Object)
+                ComponentAccessor.issueManager.updateIssue(ComponentAccessor.jiraAuthenticationContext.loggedInUser, issue, EventDispatchOption.DO_NOT_DISPATCH, false)
+            }
+        }
+    }
+
+    /**
+     * Clean the fields for the SLA received to avoid made wrong calculations when the SLA restarts.
+     * @param issue
+     * @param slaCase
+     */
+    void cleanSLAFields(Issue issue, String slaCase) {
+        List fieldsToClean = ["${slaCase}_${deferredSlaDueDateHiddenFieldStandard}",
+                              "${slaCase}_${slaDueDateHiddenFieldStandard}",
+                              "${slaCase}_${slaDaysRemainingHiddenFieldStandard}",
+                              "${slaCase}_${slaFinished}"]
+
+        fieldsToClean.each { String fieldName ->
+            setCustomFieldValue(fieldName, null, issue)
+        }
+    }
+}
