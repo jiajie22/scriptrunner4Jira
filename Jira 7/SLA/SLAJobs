@@ -46,10 +46,10 @@ class SLAJobs {
     final SLACase slaCase
     
     //Date formats used in the scripts
-    final String slaDueDateShowFormat = 'dd/MMM/yy'
+    final String slaDueDateShowFormat = SLAConstants.slaDueDateShowFormat
     
     //Name of the calendar where bank holidays will be included
-    final String ukHolidayCalendar = 'UU Business Days'
+    final String ukHolidayCalendar = SLAConstants.ukHolidayCalendar
     
     //To find the weekend from the calendar in isWeekend() method
     List<String> weekend = SLAConstants.daysOfWeek 
@@ -76,7 +76,6 @@ class SLAJobs {
     final String daysRemainingId4 = SLAConstants.SLACases.getAt("slaDaysRemainingFieldId")[3]
     
     
-    
     /**
      * Compare the values of SLA Days Remaining field and Number of Business Days between two dates.
      * Then, update the SLA Days Remaining field with the recalculated business days if both values are not the same.
@@ -92,31 +91,54 @@ class SLAJobs {
         
         def slaDueDateField = getCustomFieldById(DueDateFieldId) 
         def slaDueDate = getCustomFieldValueById(DueDateFieldId, issue) as String 
+        boolean isValidForUpdate = slaDueDate ? isValidSlaDueDateFormat(slaDueDate) : false 
         
         def slaDaysRemainingField
+        def slaDaysRemainingValue
         def DaysRemaining 
         def businessDaysRemaining
+        boolean daysRemainingNotToday = false
+        boolean validatedForCustomFieldUpdate = false
         
-        if(slaDueDate){
+        if(isValidForUpdate){
             def dueDateParsed = Date.parse(slaDueDateShowFormat, slaDueDate)
             def dueDateToLocal = dueDateParsed.toInstant().atZone(ZoneId.systemDefault()).toLocalDate() 
 
             slaDaysRemainingField = getCustomFieldById(DaysRemainingFieldId) 
-            DaysRemaining = getDaysRemainingById(issue, DaysRemainingFieldId) as Integer
+            slaDaysRemainingValue = getCustomFieldValueById(DaysRemainingFieldId, issue) as String 
+            
+            DaysRemaining = getDaysRemainingById(issue, DaysRemainingFieldId) as Integer     
             businessDaysRemaining = getBusinessDaysBetweenTwoDatesLocalDateFormatted(currentDateToLocal, dueDateToLocal) as Integer
+            
+            daysRemainingNotToday = (slaDaysRemainingValue != "Today" && DaysRemaining == 0 && businessDaysRemaining == 0)
+            validatedForCustomFieldUpdate = (slaDaysRemainingField && (DaysRemaining != businessDaysRemaining || daysRemainingNotToday))
 
             String businessDaysFormattedString = businessDaysRemaining ? (businessDaysRemaining == 1 || businessDaysRemaining == -1) ? "${businessDaysRemaining} Day" : "${businessDaysRemaining} Days" : businessDaysRemaining == null ? null : 'Today'
-            //finalValue = "${BD} days"
-            if(slaDaysRemainingField && DaysRemaining != businessDaysRemaining){            
-                issue.setCustomFieldValue(slaDaysRemainingField, businessDaysFormattedString.toString() as Object)
+            log.warn "businessDaysFormattedString >> ${businessDaysFormattedString}"
+            
+            if(validatedForCustomFieldUpdate){     
                 //setCustomFieldValueById(DaysRemainingFieldId, finalValue, issue)
-                log.warn ">>>>>>>>>>> Set! ${slaDaysRemainingField} (${DaysRemaining}) not same as Business Days (${businessDaysRemaining})"
+                issue.setCustomFieldValue(slaDaysRemainingField, businessDaysFormattedString.toString() as Object)       
+                log.warn "Set! ${slaDaysRemainingField} (${DaysRemaining}) not same as calculated Business Days (${businessDaysFormattedString})!"
             }
         }
         
-        slaDueDate ? (slaDaysRemainingField && DaysRemaining != businessDaysRemaining) : false
-    } 
-
+        isValidForUpdate ? validatedForCustomFieldUpdate : false
+    }
+    
+    
+    boolean isValidSlaDueDateFormat(String SlaDueDate){
+        boolean correctDateFormat = true
+        try {
+            Date.parse(slaDueDateShowFormat, SlaDueDate)
+        } catch(java.text.ParseException p) {
+            correctDateFormat = false
+            log.error "Unparseable Date: ${SlaDueDate}! The correct format should be ${slaDueDateShowFormat}."
+        }
+        correctDateFormat
+    }
+    
+    
     /**
      * To update an issue and store the value to Jira Database.
      * @param issue , Issue to update the custom field value
@@ -124,6 +146,7 @@ class SLAJobs {
     void setDaysRemaining(Issue issue) {
         ComponentAccessor.issueManager.updateIssue(ComponentAccessor.jiraAuthenticationContext.loggedInUser, issue, EventDispatchOption.DO_NOT_DISPATCH, false)
     }
+    
 
     /**
      * Minus one working day from SLA Remaining Days field, using the 
@@ -136,7 +159,6 @@ class SLAJobs {
         def slaDaysRemaining = getCustomFieldValueById(DaysRemainingFieldId, issue) as String 
 
         //// Replace all non-digits to "" using regex - [^\\d-0-9] - If the string doesn't contain any digit, return to 0
-        // By Max - DaysRemaining could be negative
         def DaysRemaining = 0 as Integer
         if(slaDaysRemaining){
             DaysRemaining = ((slaDaysRemaining.replaceAll("[^\\d-0-9]", "")) ? (slaDaysRemaining.replaceAll("[^\\d-0-9]", "")) : 0 ) as Integer
@@ -160,7 +182,6 @@ class SLAJobs {
      * @param durationInDays , number of days
      * @return ,the amount of business days
      */
-    // ============================ Modified isWeekend so that it will follow the business days of the Calendar
     Integer getDurationInBusinessDays(Integer durationInDays, LocalDate startCountingDate = null) {
         LocalDate resultDate
         if (!startCountingDate) {
@@ -170,29 +191,22 @@ class SLAJobs {
         } else {
             resultDate = startCountingDate
         }
-        //log.warn "getDurationInBusinessDays resultDate >> " + resultDate
         
         List holidays = slaUtils.getHolidays()
         List workingTimes = getWorkingTimes()
-        //log.warn "getDurationInBusinessDays durationInDays >> " + durationInDays
         
         boolean isNegative = durationInDays < 0
         
         // To return the absolute value of a number: -2 = 2, 2 = 2  >>>>>>> Math.abs(durationInDays)
         long totalBusinessDays = durationInDays 
-        //log.warn "totalBusinessDays >> " + totalBusinessDays
         Math.abs(durationInDays)?.times {
             resultDate =  isNegative ? resultDate.minusDays(1) : resultDate.plusDays(1)  
-        	//log.warn "resultDate plus 1 >> " + resultDate
             
             if (slaUtils.isHoliday(holidays, resultDate) || isWeekend(workingTimes,resultDate)) {
                 isNegative ? (totalBusinessDays += 1) : (totalBusinessDays -= 1 )
             }
         }
         
-        //log.warn "isNegative (durationInDays < 0)? >> " + (isNegative)      
-        //log.warn " ========== totalBusinessDays >> " + totalBusinessDays  
-        //isNegative ? (totalBusinessDays * -1) : totalBusinessDays
         totalBusinessDays
     }
     
@@ -209,7 +223,6 @@ class SLAJobs {
         LocalDate localDateUntil = dateUntil ?: LocalDate.now()
         ChronoUnit givenTemporalUnit = temporalUnit ?: ChronoUnit.DAYS
         
-        log.warn "obtainDifference localDateFrom.until >> " + localDateFrom.until(localDateUntil, givenTemporalUnit)
         localDateFrom.until(localDateUntil, givenTemporalUnit)
     }
 
@@ -260,7 +273,7 @@ class SLAJobs {
     
     
     /**
-     * Check if a date is weekend
+     * Check if a date is weekend on the calendar name given
      * @param workingTimes , list of working/business times
      * @param date , date to check
      * @return true if is weekend otherwise return false
@@ -273,6 +286,7 @@ class SLAJobs {
         }
         
         def DayForToday = date?.dayOfWeek as String
+        
         //date?.dayOfWeek in [DayOfWeek.SATURDAY, DayOfWeek.SUNDAY]
         DayForToday in weekend 
     }
@@ -286,6 +300,6 @@ class SLAJobs {
         ApplicationUser user = ComponentAccessor.jiraAuthenticationContext.loggedInUser
         def ukCalendar = slaCalendarService.getAll(user).find { it.name == ukHolidayCalendar }
         ukCalendar?.workingTimes
-
     } 
+    
 }
