@@ -92,21 +92,29 @@ class SLAJobs {
         
         def slaDueDateField = getCustomFieldById(DueDateFieldId) 
         def slaDueDate = getCustomFieldValueById(DueDateFieldId, issue) as String 
-        def dueDateParsed = Date.parse(slaDueDateShowFormat, slaDueDate)
-		def dueDateToLocal = dueDateParsed.toInstant().atZone(ZoneId.systemDefault()).toLocalDate() 
         
-        def slaDaysRemainingField = getCustomFieldById(DaysRemainingFieldId) 
-        def DaysRemaining = getDaysRemainingById(issue, DaysRemainingFieldId) as Integer
-        def businessDaysRemaining = getBusinessDaysBetweenTwoDatesLocalDateFormatted(currentDateToLocal, dueDateToLocal) as Integer
+        def slaDaysRemainingField
+        def DaysRemaining 
+        def businessDaysRemaining
         
-        String businessDaysFormattedString = businessDaysRemaining ? (businessDaysRemaining == 1 || businessDaysRemaining == -1) ? "${businessDaysRemaining} Day" : "${businessDaysRemaining} Days" : businessDaysRemaining == null ? null : 'Today'
-        //finalValue = "${BD} days"
-        if(slaDaysRemainingField && DaysRemaining != businessDaysRemaining){            
-            issue.setCustomFieldValue(slaDaysRemainingField, businessDaysFormattedString.toString() as Object)
-            //setCustomFieldValueById(DaysRemainingFieldId, finalValue, issue)
-            log.warn ">>>>>>>>>>> Set! ${slaDaysRemainingField} (${DaysRemaining}) not same as Business Days (${businessDaysRemaining})"
+        if(slaDueDate){
+            def dueDateParsed = Date.parse(slaDueDateShowFormat, slaDueDate)
+            def dueDateToLocal = dueDateParsed.toInstant().atZone(ZoneId.systemDefault()).toLocalDate() 
+
+            slaDaysRemainingField = getCustomFieldById(DaysRemainingFieldId) 
+            DaysRemaining = getDaysRemainingById(issue, DaysRemainingFieldId) as Integer
+            businessDaysRemaining = getBusinessDaysBetweenTwoDatesLocalDateFormatted(currentDateToLocal, dueDateToLocal) as Integer
+
+            String businessDaysFormattedString = businessDaysRemaining ? (businessDaysRemaining == 1 || businessDaysRemaining == -1) ? "${businessDaysRemaining} Day" : "${businessDaysRemaining} Days" : businessDaysRemaining == null ? null : 'Today'
+            //finalValue = "${BD} days"
+            if(slaDaysRemainingField && DaysRemaining != businessDaysRemaining){            
+                issue.setCustomFieldValue(slaDaysRemainingField, businessDaysFormattedString.toString() as Object)
+                //setCustomFieldValueById(DaysRemainingFieldId, finalValue, issue)
+                log.warn ">>>>>>>>>>> Set! ${slaDaysRemainingField} (${DaysRemaining}) not same as Business Days (${businessDaysRemaining})"
+            }
         }
-        (slaDaysRemainingField && DaysRemaining != businessDaysRemaining)
+        
+        slaDueDate ? (slaDaysRemainingField && DaysRemaining != businessDaysRemaining) : false
     } 
 
     /**
@@ -162,17 +170,17 @@ class SLAJobs {
         } else {
             resultDate = startCountingDate
         }
-        log.warn "getDurationInBusinessDays resultDate >> " + resultDate
+        //log.warn "getDurationInBusinessDays resultDate >> " + resultDate
         
         List holidays = slaUtils.getHolidays()
         List workingTimes = getWorkingTimes()
-        log.warn "getDurationInBusinessDays durationInDays >> " + durationInDays
+        //log.warn "getDurationInBusinessDays durationInDays >> " + durationInDays
         
         boolean isNegative = durationInDays < 0
         
         // To return the absolute value of a number: -2 = 2, 2 = 2  >>>>>>> Math.abs(durationInDays)
         long totalBusinessDays = durationInDays 
-        log.warn "totalBusinessDays >> " + totalBusinessDays
+        //log.warn "totalBusinessDays >> " + totalBusinessDays
         Math.abs(durationInDays)?.times {
             resultDate =  isNegative ? resultDate.minusDays(1) : resultDate.plusDays(1)  
         	//log.warn "resultDate plus 1 >> " + resultDate
@@ -182,8 +190,8 @@ class SLAJobs {
             }
         }
         
-        log.warn "isNegative (durationInDays < 0)? >> " + (isNegative)      
-        log.warn " ========== totalBusinessDays >> " + totalBusinessDays  
+        //log.warn "isNegative (durationInDays < 0)? >> " + (isNegative)      
+        //log.warn " ========== totalBusinessDays >> " + totalBusinessDays  
         //isNegative ? (totalBusinessDays * -1) : totalBusinessDays
         totalBusinessDays
     }
