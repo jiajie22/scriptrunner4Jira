@@ -65,26 +65,26 @@ if (!slaUtils.isHoliday(holidays, currentDateToLocal) && !slaJobs.isWeekend(work
         def d = false
         
         //// Minus 1 WORKING DAY from the SLA Remaining Days if current day is not a Public Holiday or Weekends
-        if(statusC1 && statusC1 == "Started"){
+        if(statusC1 && statusC1 == SLAConstants.Started){
             a = slaJobs.UpdateDaysRemainingWithBusinessDays(issue, slaJobs.daysRemainingId1,  slaJobs.dueDateId1)
         }
 
-        if(statusC2 && statusC2 == "Started"){
+        if(statusC2 && statusC2 == SLAConstants.Started){
             b = slaJobs.UpdateDaysRemainingWithBusinessDays(issue, slaJobs.daysRemainingId2,  slaJobs.dueDateId2)
 
         }
 
-        if(statusC3 && statusC3 == "Started"){
+        if(statusC3 && statusC3 == SLAConstants.Started){
             c = slaJobs.UpdateDaysRemainingWithBusinessDays(issue, slaJobs.daysRemainingId3,  slaJobs.dueDateId3)
 
         }
 
-        if(statusC4 && statusC4 == "Started"){
+        if(statusC4 && statusC4 == SLAConstants.Started){
             d = slaJobs.UpdateDaysRemainingWithBusinessDays(issue, slaJobs.daysRemainingId4,  slaJobs.dueDateId4)
         }
         
         if(a || b || c || d){
-            log.warn "Called setDaysRemaining to update issue ${issue}"
+            log.warn ">>>>>>>>>>>> Called setDaysRemaining to update issue ${issue}!"
             slaJobs.setDaysRemaining(issue)
         }
         
