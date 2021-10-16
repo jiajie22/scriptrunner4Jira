@@ -1,0 +1,106 @@
+package SLA
+
+import com.atlassian.jira.component.ComponentAccessor
+import com.atlassian.jira.event.type.EventDispatchOption
+import com.atlassian.jira.issue.MutableIssue
+import com.atlassian.jira.user.ApplicationUser
+import SLA.SLAUtils
+import Models.SLACase
+import Constants.SLAConstants
+import groovy.util.logging.Log4j
+import java.sql.Timestamp
+import java.time.LocalDate
+
+@Log4j
+class SLATransitions {
+    final SLAUtils slaUtils = new SLAUtils()
+    //The current user who perform the workflow transition is responsible to update the fields.
+	final ApplicationUser loggedInUser = ComponentAccessor.getJiraAuthenticationContext().getLoggedInUser()
+    
+    //SLA status names are defined here.
+    final String SLA_START_FLAG_NAME = "Started"
+    final String SLA_STOP_FLAG_NAME = "Stopped"
+	final String SLA_PAUSE_FLAG_NAME = "Paused"
+	final String SLA_RESUME_FLAG_NAME = "Started"
+    
+    final MutableIssue issue
+    final SLACase slaCase
+    final Integer slaDurationInDays
+    
+    SLATransitions(MutableIssue issue, String slaName, String slaDurationInDays) {
+        this.issue = issue
+        this.slaCase = SLAConstants.SLACases.find { slaCase -> slaCase.name == slaName }
+        this.slaDurationInDays = slaDurationInDays?.replaceAll("[^0-9]", "") ? slaDurationInDays.replaceAll("[^0-9]", "").toInteger() : 0
+        assert slaCase != null
+    }
+    
+    void startSla() {
+        setSlaDueDate(slaDurationInDays)
+        setDaysRemaining(slaDurationInDays)
+        setSlaStatus(SLA_START_FLAG_NAME)
+        ComponentAccessor.getIssueManager().updateIssue(loggedInUser, issue, EventDispatchOption.ISSUE_UPDATED, true)
+    }
+    
+    void stopSla() {
+        setSlaStatus(SLA_STOP_FLAG_NAME)
+        ComponentAccessor.getIssueManager().updateIssue(loggedInUser, issue, EventDispatchOption.ISSUE_UPDATED, true)
+    }
+
+    void pauseSla() {
+        def slaDueDateField = ComponentAccessor.getCustomFieldManager().getCustomFieldObject(slaCase.slaDueDateFieldId)
+        def slaDeferralStartDateField = ComponentAccessor.getCustomFieldManager().getCustomFieldObject(slaCase.slaDeferralStartDateFieldId)
+        def slaDaysRemainingField = ComponentAccessor.getCustomFieldManager().getCustomFieldObject(slaCase.slaDaysRemainingFieldId)
+        
+        def slaDueDateFieldValue = issue.getCustomFieldValue(slaDueDateField) as String
+        def slaDeferralStartDateFieldValue = issue.getCustomFieldValue(slaDeferralStartDateField) as Timestamp
+        LocalDate slaDueDate = slaUtils.getLocalDateFromString(slaDueDateFieldValue, slaUtils.slaDueDateShowFormat)
+        LocalDate slaDeferralStartDate = slaDeferralStartDateFieldValue.toLocalDate()
+        def businessDays = slaUtils.getBusinessDaysToDueDateLocalDateFormatted(slaDeferralStartDate, slaDueDate)
+		
+        setDaysRemaining(businessDays)
+        setSlaStatus(SLA_PAUSE_FLAG_NAME)
+        ComponentAccessor.getIssueManager().updateIssue(loggedInUser, issue, EventDispatchOption.ISSUE_UPDATED, true)
+    }
+
+    void resumeSla() {
+        def slaDaysRemainingField = ComponentAccessor.getCustomFieldManager().getCustomFieldObject(slaCase.slaDaysRemainingFieldId)
+
+        def currentSlaDaysRemainingFieldValue = issue.getCustomFieldValue(slaDaysRemainingField) as String
+        def currentDaysRemaining = ((currentSlaDaysRemainingFieldValue.replaceAll("[^-0-9]", "")) ? (currentSlaDaysRemainingFieldValue.replaceAll("[^-0-9]", "")) : 0 ) as Integer // need more verification of logic and check for "today"
+        
+        Integer slaDurationInDays = currentDaysRemaining + 1
+        
+        setSlaDueDate(slaDurationInDays)
+        setDaysRemaining(slaDurationInDays)
+        setSlaStatus(SLA_RESUME_FLAG_NAME)
+        ComponentAccessor.getIssueManager().updateIssue(loggedInUser, issue, EventDispatchOption.ISSUE_UPDATED, true)
+    }
+
+    void resetSlaFields() {
+        def slaStatusField = ComponentAccessor.getCustomFieldManager().getCustomFieldObject(slaCase.slaStatusFieldId)
+        def slaDueDateField = ComponentAccessor.getCustomFieldManager().getCustomFieldObject(slaCase.slaDueDateFieldId)
+        def slaDaysRemainingField = ComponentAccessor.getCustomFieldManager().getCustomFieldObject(slaCase.slaDaysRemainingFieldId)
+
+        issue.setCustomFieldValue(slaStatusField, null)
+        issue.setCustomFieldValue(slaDueDateField, null)
+        issue.setCustomFieldValue(slaDaysRemainingField, null)
+        ComponentAccessor.getIssueManager().updateIssue(loggedInUser, issue, EventDispatchOption.ISSUE_UPDATED, true)
+    }
+    
+    private void setSlaStatus(String statusName) {
+        def slaStatusField = ComponentAccessor.getCustomFieldManager().getCustomFieldObject(slaCase.slaStatusFieldId)
+        issue.setCustomFieldValue(slaStatusField, statusName)
+    }
+    
+    private void setSlaDueDate(Integer slaDurationInDays) {
+        def slaDueDateField = ComponentAccessor.getCustomFieldManager().getCustomFieldObject(slaCase.slaDueDateFieldId)
+        String dueDate = slaUtils.calculateStandardSlaDueDate_v2(issue, slaDurationInDays)
+        issue.setCustomFieldValue(slaDueDateField, dueDate)
+    }
+    
+    private void setDaysRemaining(Integer daysRemaining) {
+        def slaDaysRemainingField = ComponentAccessor.getCustomFieldManager().getCustomFieldObject(slaCase.slaDaysRemainingFieldId)
+        String formattedDaysRemaining = daysRemaining ? (daysRemaining == 1 || daysRemaining == -1) ? "${daysRemaining} Day" : "${daysRemaining} Days" : daysRemaining == null ? null : 'Today'
+        issue.setCustomFieldValue(slaDaysRemainingField, formattedDaysRemaining)
+    }
+}
