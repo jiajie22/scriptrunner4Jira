@@ -1,0 +1,52 @@
+package Constants
+
+import Models.SLACase
+
+class SLAConstants {
+    //Date formats used in the scripts
+    static String slaDueDateShowFormat = 'dd/MMM/yy'
+    
+    //Name of the calendar where bank holidays will be included
+    static String ukHolidayCalendar = 'UU Business Days'
+    
+    //The status for updating the fields in the Scheduled Job
+    static String Started = 'Started'
+    
+    //To find the weekend from the calendar in SLA.SLAJobs isWeekend() method
+    static List<String> daysOfWeek = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY']
+    
+    static List<SLACase> SLACases = [
+        new SLACase(
+            name: 'C1-1',
+            //slaDurationInDays: 12,
+            slaStatusFieldId: 'customfield_10966',
+            slaDueDateFieldId: 'customfield_10967',
+            slaDaysRemainingFieldId: 'customfield_10968',
+            slaDeferralStartDateFieldId: 'customfield_10662',
+        ),
+        new SLACase(
+            name: 'C1-2',
+            //slaDurationInDays: 10,
+            slaStatusFieldId: 'customfield_10970',
+            slaDueDateFieldId: 'customfield_10969',
+            slaDaysRemainingFieldId: 'customfield_10971',
+            slaDeferralStartDateFieldId: 'customfield_10663',
+        ),
+        new SLACase(
+            name: 'C1-3',
+            //slaDurationInDays: 10,
+            slaStatusFieldId: 'customfield_10974',
+            slaDueDateFieldId: 'customfield_10972',
+            slaDaysRemainingFieldId: 'customfield_10973',
+			slaDeferralStartDateFieldId: 'customfield_10664',
+        ),
+        new SLACase(
+            name: 'C1-4',
+            //slaDurationInDays: 10,
+            slaStatusFieldId: 'customfield_10975',
+            slaDueDateFieldId: 'customfield_10976',
+            slaDaysRemainingFieldId: 'customfield_10977',
+			slaDeferralStartDateFieldId: 'customfield_10665',
+        ),
+    ]
+}
