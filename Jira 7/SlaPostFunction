@@ -1,0 +1,51 @@
+import com.onresolve.scriptrunner.parameters.annotation.*
+import com.onresolve.scriptrunner.parameters.annotation.meta.Option
+import SLA.SLATransitions
+
+@Select(
+    label = "SLA Name",
+    description = "Select SLA",
+    options = [
+        @Option(label = "C1-1", value = "C1-1"),
+        @Option(label = "C1-2", value = "C1-2"),
+        @Option(label = "C1-3", value = "C1-3"),
+        @Option(label = "C1-4", value = "C1-4"),
+    ]
+)
+String slaName
+
+@Select(
+    label = "SLA Transition Name",
+    description = "Select one of: Start, Pause, Stop, Resume and Reset",
+    options = [
+        @Option(label = "Start", value = "Start"),
+        @Option(label = "Pause", value = "Pause"),
+        @Option(label = "Stop", value = "Stop"),
+        @Option(label = "Resume", value = "Resume"),
+        @Option(label = "Reset", value = "Reset"),
+    ]
+)
+String slaTransitionName
+
+@ShortTextInput(label = "SLA Duration In Days", description = "Only applicable to start transition")
+String slaDurationInDays
+
+def slaTransitions = new SLATransitions(issue, slaName, slaDurationInDays)
+
+switch(slaTransitionName) {
+    case 'Start':
+    	slaTransitions.startSla()
+    	break
+    case 'Pause':
+    	slaTransitions.pauseSla()
+    	break
+    case 'Stop':
+    	slaTransitions.stopSla()
+    	break
+    case 'Resume':
+    	slaTransitions.resumeSla()
+    	break
+    case 'Reset':
+    	slaTransitions.resetSlaFields()
+    	break
+}
