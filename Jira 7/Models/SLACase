@@ -1,0 +1,10 @@
+package Models
+
+class SLACase {
+    String name
+    //Integer slaDurationInDays
+    String slaStatusFieldId
+    String slaDueDateFieldId
+    String slaDaysRemainingFieldId
+	String slaDeferralStartDateFieldId
+}
