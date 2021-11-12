@@ -1,0 +1,365 @@
+/*
+ STATUS : FIRST DRAFT - ALL FUNCTIONS ARE COMBINED IN A SCRIPT
+ UPDATE : POST A REMINDER TO A CHANNEL, APP'S MESSAGE TAB AND APP'S HOME TAB
+*/
+
+// ==================== HTTP POST METHOD
+///*
+import com.atlassian.jira.component.ComponentAccessor
+import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
+import groovyx.net.http.HttpResponseDecorator
+import groovyx.net.http.RESTClient
+
+import groovy.json.StreamingJsonBuilder
+import groovyx.net.http.ContentType
+import groovyx.net.http.*
+import static groovyx.net.http.Method.*
+    
+import com.atlassian.sal.api.component.ComponentLocator
+import groovyx.net.http.ContentType
+import groovyx.net.http.RESTClient
+import groovyx.net.http.HttpResponseDecorator
+import java.time.format.DateTimeFormatter
+import java.time.LocalDate
+import java.time.*
+import java.text.SimpleDateFormat;
+import java.util.Date;
+    
+    
+final String BASE_URL = 'https://api.bamboohr.com/api/gateway.php/prettyjj/v1/'     
+
+final API_KEY = '37707514bc285312f1720984be9ddb95482466d4'
+
+final List<String> fields = ["id","firstName","lastName","dateOfBirth","hireDate","type"] as List //new ArrayList<String>()
+
+final LocalDate todayLocalDate = LocalDate.now()
+log.warn "TODAY > ${todayLocalDate}"
+
+// get current date and month
+final int date = todayLocalDate.getDayOfMonth();
+final Month month = todayLocalDate.getMonth();
+final int year = todayLocalDate.getYear()
+
+def restClient = new RESTClient(BASE_URL)
+restClient.auth.basic(API_KEY, 'x')
+restClient.setHeaders([
+        'Accept'       : ContentType.JSON
+])
+
+
+class Employee {
+    int employeeID
+    String displayName
+    String department
+}
+
+class Celebrations {
+    int employeeID
+    LocalDate dateOfBirth
+    LocalDate hireDate
+}
+
+Map<Integer, Employee> getEmployees(RESTClient restClient) {
+    def result = [:]
+    
+    restClient.handler.failure = { HttpResponseDecorator response ->
+        //handleFailedResponse(response)
+        // Failure can be handled here
+        response.entity.content.text
+        log.error ">>> Error Code: " + response.status
+    	"${response.headers.each { log.warn "${it.name} : ${it.value}" }}"
+        [:]
+    }
+    
+    restClient.handler.success = {response, Map data ->
+        //log.warn "dir >>>> " + data.employees
+            result = data.employees.collect {
+                Map employee ->
+                    [(employee.id as int): new Employee(
+                        employeeID: employee.id as int,
+                        displayName: employee.displayName as String,
+                        department: employee.department as String
+                    )]
+            }.collectEntries()
+    }
+
+    restClient.get(
+        path: 'employees/directory',
+        contentType: ContentType.JSON
+    )
+
+    //log.warn result as Map<Integer, Employee>
+    result as Map<Integer, Employee>
+    
+}
+
+def employees = getEmployees(restClient)
+//log.warn employees.size()
+List<String> birthday = new ArrayList<String>()
+Map<String, Integer> anniversary = new HashMap<String, Integer>()
+//Map<String, String> celebrations = new HashMap<String, String>()
+def celebrations 
+def ID
+for (Object item : employees) { 
+    if(item.value.department.toString() == "Product"){
+        ID = item.key as int
+        def name = item.value.displayName as String
+        //log.warn "ID: " + item.key + " | Name: " + item.value.displayName
+       
+        //log.warn (BASE_URL + "employees/" + ID + "/?fields=" + implode(",",fields))
+        def restClient2 = new RESTClient(BASE_URL + "employees/" + ID + "/?fields=" + implode(",",fields))
+        restClient2.auth.basic(API_KEY, 'x')
+        restClient2.setHeaders([
+            'Accept'       : ContentType.JSON
+        ])
+
+        celebrations = getEmployee(restClient2, ID)
+        //log.warn "celebrations ====== ${celebrations}"
+        
+        ///*
+        for (Object items : celebrations) { 
+           //log.warn "dateOfBirth: " + items.value.dateOfBirth + " | hireDate: " + items.value.hireDate
+           int birthDate = items.value.dateOfBirth.getDayOfMonth()
+           Month birthMonth = items.value.dateOfBirth.getMonth()
+           int hireDate = items.value.hireDate.getDayOfMonth()
+           Month hireMonth = items.value.hireDate.getMonth()
+           int hireYear = items.value.hireDate.getYear() 
+            
+            if(date == birthDate && month == birthMonth) {
+              birthday.add(name)
+            }
+            
+            if(date == hireDate && month == hireMonth) {
+              anniversary.put(name, year - hireYear)
+            }
+          
+        }
+        /**/
+        
+    }
+}
+
+
+Map<Integer, Celebrations> getEmployee(RESTClient restClient2, Integer ID) {
+    def result = [:]
+
+    List<String> fields = ["id","firstName","lastName","dateOfBirth","hireDate"] as List //new ArrayList<String>()
+    //log.warn fields.size() 
+    
+    restClient2.handler.failure = { HttpResponseDecorator response ->
+        //handleFailedResponse(response)
+        // Failure can be handled here
+        response.entity.content.text
+        log.error ">>> Error Code: " + response.status
+    	"${response.headers.each { log.warn "${it.name} : ${it.value}" }}"
+        [:]
+    }
+    
+    restClient2.handler.success = {response, Map data ->
+        //log.warn "data > ${data}"
+        def id = (data.find{ it.key == "id" }?.value) as int ?: 0 as int
+        def dateOfBirth = (data.find{ it.key == "dateOfBirth" }?.value) as String ?: "0000-00-00"
+        def hireDate = (data.find{ it.key == "hireDate" }?.value) as String ?: null
+            
+        //log.warn "id > ${id} | dateOfBirth > ${dateOfBirth} | hireDate > ${hireDate}"
+
+        def dateOfBirthParsed = Date.parse("yyyy-MM-dd", dateOfBirth.toString())
+        def dateOfBirthToLocal = dateOfBirthParsed.toInstant().atZone(ZoneId.systemDefault()).toLocalDate() 
+        //log.warn " dateOfBirthToLocal: " + dateOfBirthToLocal
+        
+        def hireDateParsed = Date.parse("yyyy-MM-dd", hireDate.toString())
+        def hireDateToLocal = hireDateParsed.toInstant().atZone(ZoneId.systemDefault()).toLocalDate() 
+        //log.warn " hireDateToLocal: " + hireDateToLocal
+        
+        result = data.collect {
+                    [(id as int): new Celebrations(
+                        employeeID: id as int,
+                        dateOfBirth: dateOfBirthToLocal as LocalDate,
+                        hireDate: hireDateToLocal as LocalDate
+                    )]
+            }.collectEntries()
+
+    }
+
+
+    restClient2.get(
+        //path: "employees/" + ID + "/?fields=" + implode(",",fields),
+        contentType: ContentType.JSON
+    )
+    
+    //log.warn result as Map<Integer, Celebrations>
+    result as Map<Integer, Celebrations>
+    
+}
+
+
+
+
+private static String implode(String glue, List<String> arr) {
+    	StringBuilder sb = new StringBuilder();
+		if (arr.size()  > 0) {
+			sb.append(arr[0]);
+			for (int i=1; i<arr.size() ; i++) {
+				sb.append(glue);
+				sb.append(arr[i]);
+    			}
+		}
+		return sb.toString();
+}
+
+
+//*
+
+// ===================== CHANNEL / APPS MESSAGE
+final groupPermissionsUrl = "https://slack.com/api/chat.postMessage"
+
+// ===================== APPS HOME
+//final groupPermissionsUrl = "https://slack.com/api/views.publish" //"https://webhook.site/9e62f173-9cf3-4b40-82b2-544002190b05"//
+
+//  Bot User OAuth Token
+def apiToken = "xoxb-2381204756067-2374271443894-pvKo3OTHEF5XO6MaeBCJihVi" 
+//  User OAuth Token
+//xoxp-2381204756067-2377981541061-2381016574882-ed94d843496f7702a9feaafe53f55cd1
+
+def basicAuth = "admin:admin".bytes.encodeBase64().toString()
+
+log.warn "birthday > ${birthday.join(" & ")}"
+//log.warn "anniversary > ${anniversary}"
+def ann = anniversary.collect{
+    it.key + "'s " + ordinal_suffix_of(it.value as int) + " Anniversary"
+}.join(" & ")
+log.warn "anniversary > ${ann}"
+String ordinal_suffix_of(Integer i) {
+    def j = i % 10, k = i % 100
+    if (j == 1 && k != 11) {
+        return i + "st";
+    }
+    if (j == 2 && k != 12) {
+        return i + "nd";
+    }
+    if (j == 3 && k != 13) {
+        return i + "rd";
+    }
+    return i + "th";
+}
+
+///*
+// ===================== Build message content for CHANNEL / APPS MESSAGE
+def birthdaycontent = """
+:birthday: *BIRTHDAY REMINDER!* :birthday:  
+
+It's *${birthday.join(" & ")}*'s birthday today (${todayLocalDate})!
+
+Make sure that they have a special day :tada:!
+"""
+
+def anniversarycontent = """
+:calendar: *ANNIVERSARY REMINDER!* :calendar: 
+
+It's *${ann}* today (${todayLocalDate})!
+
+Let's wish them many successful years with us here :tada:!
+"""
+
+def slackMessage = """
+[
+	{
+    	"type": "section",
+        "text": {
+			"type": "mrkdwn",
+			"text": "${anniversarycontent}"
+		}
+	}
+]
+""".stripIndent()
+
+
+def attach = """
+[
+	{
+		"text": ""
+	}
+]
+""".stripIndent()
+
+
+
+// Slack bodyJson
+def bodyJson2 = [
+    channel: "D02BWJY4X5E", // APPS MESSAGE: D02BWJY4X5E | CHANNEL: jj-app
+    username: "PRETTY JJ APP",
+    blocks: slackMessage,
+    attachments: attach
+    
+] as Map
+
+///*
+// ===================== Build message content for APPS HOME
+def blocksMessage = """
+	{
+    	"type": "home",
+		"blocks":[
+          {
+             "type":"section",
+             "text":{
+                "type":"mrkdwn",
+                "text":"HOW TO SEND TO MESSAGE TAB?????"
+             }
+          },
+          {
+             "type":"actions",
+             "elements":[
+                {
+                   "type":"button",
+                   "text":{
+                      "type":"plain_text",
+                      "text":"Action A",
+                      "emoji":true
+                   }
+                },
+                {
+                   "type":"button",
+                   "text":{
+                      "type":"plain_text",
+                      "text":"Action B",
+                      "emoji":true
+                   }
+                }
+             ]
+          }
+       ]
+	}
+""".stripIndent()
+
+def bodyJson = [
+    user_id: "U02B3UVFX1T", // Bot: U02B07ZD1SA || JJ GMAIL: U02B3UVFX1T
+    view: blocksMessage//,
+    //attachments: attach
+    
+] as Map
+//log.warn bodyJson
+
+///*
+def http = new HTTPBuilder(groupPermissionsUrl)
+http.request(POST) {req ->
+    headers."Authorization" = "Bearer ${apiToken}"
+    headers."Proxy-Authorization" = basicAuth
+    body = bodyJson2 // =============================================== CHANNEL / APPS MESSAGE = bodyJson2 | APPS HOME = bodyJson
+    requestContentType = ContentType.JSON
+
+    response.success = { resp ->
+        log.warn "==================== Success! ${resp.status}"
+        resp.getAllHeaders().each{
+    		log.warn it
+        }
+    }
+
+    response.failure = { resp ->
+        log.warn "Request failed with status ${resp.status}"
+        "${resp.headers.each { log.warn "${it.name} : ${it.value}" }}"
+    }
+
+}
+
+/**/
