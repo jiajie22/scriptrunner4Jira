@@ -1,0 +1,9 @@
+Issue Type,Issue key,Issue id,Summary,Custom field (custom script field),Custom field (Found in Build),Custom field (Immediate actions),Status,Created,Updated
+Task,STORM-12,10807,taskiee ,david,B_MASTER_1001,,Open,03/Feb/21 8:15 AM,03/Feb/21 8:18 AM
+Story,STORM-11,10806,test abc here?,sim,B_MASTER_2000,,Open,03/Feb/21 8:15 AM,03/Feb/21 8:19 AM
+Bug,STORM-10,10805,buggy buggy here?,admin,B_MASTER_1000,,Open,03/Feb/21 8:15 AM,03/Feb/21 8:19 AM
+Story,STORM-9,10804,storm story here?,sim,B_MASTER_1200,,Open,03/Feb/21 8:14 AM,03/Feb/21 8:19 AM
+Epic,STORM-8,10803,Epic storm,sim,B_MASTER_1800,,Open,03/Feb/21 8:14 AM,03/Feb/21 8:19 AM
+Task,STORM-7,10802,storm task,david,B_MASTER_600,,Open,03/Feb/21 8:14 AM,03/Feb/21 8:19 AM
+Bug,STORM-6,10801,buggy stormgy,admin,B_MASTER_900,,Open,03/Feb/21 8:14 AM,03/Feb/21 8:19 AM
+Story,STORM-5,10800,Story stormy,david,B_MASTER_800,,Open,03/Feb/21 8:13 AM,03/Feb/21 8:19 AM
